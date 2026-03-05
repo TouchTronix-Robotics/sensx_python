@@ -1,0 +1,71 @@
+# SensX Python API
+
+Python driver for TouchTronix tactile sensors.
+
+## Install
+
+```bash
+cd sensx_python
+pip install -e .
+```
+
+## Quick Start
+
+Blocking read:
+
+```python
+from sensx import SensX
+
+sensor = SensX(port="/dev/ttyUSB0")
+while True:
+    frame = sensor.read_frame()
+    print(frame)
+```
+
+Callback:
+
+```python
+from sensx import SensX
+
+sensor = SensX(port="/dev/ttyUSB0")
+sensor.on_frame = lambda frame, ts: print(frame.max())
+sensor.start()
+```
+
+Callback with context manager:
+
+```python
+from sensx import SensX
+import time
+
+with SensX(port="/dev/ttyUSB0") as sensor:
+    sensor.on_frame = lambda frame, ts: print(frame.max())
+    sensor.start()
+    time.sleep(5)
+```
+
+## API
+
+### `SensX(port, baud_rate=15_000_000, rows=16, cols=12)`
+
+| Method / Property     | Description                                      |
+|-----------------------|--------------------------------------------------|
+| `start()`             | Start background reader thread                   |
+| `stop()`              | Stop the reader thread                           |
+| `close()`             | Stop and close the serial port                   |
+| `read_frame()`        | Blocking read -- returns one frame (no threading)|
+| `latest_frame`        | Thread-safe copy of the most recent frame        |
+| `latest_timestamp`    | `time.perf_counter()` of the most recent frame   |
+| `on_frame`            | Callback: `fn(frame: np.ndarray, ts: float)`     |
+
+### Serial Permissions (Linux)
+
+```bash
+sudo chmod a+rw /dev/ttyUSB0
+```
+
+## Run Example
+
+```bash
+python examples/stream_example.py
+```

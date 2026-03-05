@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sensx"
+version = "0.1.0"
+description = "Python API for TouchTronix tactile sensors"
+requires-python = ">=3.8"
+dependencies = [
+    "pyserial>=3.5",
+    "numpy>=1.21",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
