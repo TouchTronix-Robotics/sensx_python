@@ -6,6 +6,7 @@ Python driver for TouchTronix tactile sensors.
 
 ```bash
 cd sensx_python
+pip install --upgrade pip setuptools wheel
 pip install -e .
 ```
 
@@ -89,3 +90,36 @@ with SensX(port="/dev/ttyUSB0") as sensor:
 | `latest_frame`        | Thread-safe copy of the most recent frame        |
 | `latest_timestamp`    | `time.perf_counter()` of the most recent frame   |
 | `on_frame`            | Callback: `fn(frame: np.ndarray, ts: float)`     |
+
+## Troubleshooting
+
+### `build_editable` error on `pip install -e .`
+
+```
+ERROR: Project ... has a 'pyproject.toml' and its build backend is missing the 'build_editable' hook.
+```
+
+Your `setuptools` is too old. Editable installs require **setuptools >= 64.0** (PEP 660). Fix:
+
+```bash
+pip install --upgrade pip setuptools wheel
+pip install -e .
+```
+
+If you still can't use editable mode, a regular install also works:
+
+```bash
+pip install .
+```
+
+### `ModuleNotFoundError: No module named 'sensx'`
+
+The install step above likely failed. Check the install output and retry.
+
+### `command 'python' not found`
+
+On Ubuntu 22.04+, use `python3` instead of `python`, or install the compatibility package:
+
+```bash
+sudo apt install python-is-python3
+```
