@@ -69,6 +69,9 @@ class SensX:
         self._timestamp: float = 0.0
         self._lock = threading.Lock()
 
+        # Persistent read buffer (shared by read_frame and _reader_loop)
+        self._buf = bytearray()
+
         # Background reader
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -146,18 +149,14 @@ class SensX:
         simple scripts that just want to poll.  Do **not** mix this with
         ``start()`` / ``on_frame``; use one pattern or the other.
         """
-        buf = bytearray()
+        buf = self._buf
         while True:
-            chunk = self._ser.read(self._read_chunk)
-            if chunk:
-                buf += chunk
-
+            # Check buffer first before reading more data
             idx = buf.find(self.HEADER)
             if idx != -1 and len(buf) >= idx + self._frame_size:
                 payload_end = idx + self.HEADER_LEN + self._payload_size
                 payload = bytes(buf[idx + self.HEADER_LEN : payload_end])
-                # Advance past the full frame (including trailing byte)
-                buf = buf[idx + self._frame_size :]
+                del buf[: idx + self._frame_size]
                 frame = np.frombuffer(payload, dtype=">u2").reshape(
                     self.rows, self.cols
                 )
@@ -165,6 +164,11 @@ class SensX:
                     self._frame[:] = frame
                     self._timestamp = time.perf_counter()
                 return frame
+
+            # Not enough data — read more
+            chunk = self._ser.read(self._read_chunk)
+            if chunk:
+                buf += chunk
 
             # Prevent unbounded growth
             if len(buf) > self._frame_size * 8:

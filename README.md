@@ -58,6 +58,14 @@ with SensX(port="/dev/ttyUSB0") as sensor:
 | `latest_timestamp`    | `time.perf_counter()` of the most recent frame   |
 | `on_frame`            | Callback: `fn(frame: np.ndarray, ts: float)`     |
 
+### Supported Sensors
+
+| Model     | Grid  | Part Number        |
+|-----------|-------|--------------------|
+| SensX 25  | 5x5   | SNX0505-SNS-01     |
+| SensX 160 | 20x8  | SNX2006-SNS-01     |
+| SensX 192 | 12x16 | SNX1216-SNS-01     |
+
 ### Serial Permissions (Linux)
 
 ```bash
@@ -67,5 +75,15 @@ sudo chmod a+rw /dev/ttyUSB0
 ## Run Example
 
 ```bash
+# Print sensor grid (default: 5x5)
 python examples/stream_example.py
+
+# Specify sensor size
+python examples/stream_example.py --rows 20 --cols 8
+
+# Measure frame rate
+python examples/stream_example.py --benchmark
+
+# All options
+python examples/stream_example.py --port /dev/ttyUSB0 --baud 921600 --rows 5 --cols 5
 ```
