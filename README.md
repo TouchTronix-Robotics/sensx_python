@@ -34,13 +34,12 @@ python examples/stream_example.py --port /dev/ttyUSB0 --baud 921600 --rows 5 --c
 
 ### Supported Sensors
 
-| Model     | Grid  | Part Number        | Example Command |
-|-----------|-------|--------------------|-----------------|
-| SensX 25  | 5x5   | SNX0505-SNS-01     | `python examples/stream_example.py --port /dev/ttyUSB0 --baud 921600 --rows 5 --cols 5` |
-| SensX 160 | 20x8  | SNX2006-SNS-01     | `python examples/stream_example.py --port /dev/ttyUSB0 --baud 921600 --rows 20 --cols 8` |
-| SensX 192 | 16x12 | SNX1216-SNS-01     | `python examples/stream_example.py --port /dev/ttyUSB0 --baud 1500000 --rows 16 --cols 12` * |
+| Model     | Grid  | Image | Example Command |
+|-----------|-------|-------|-----------------|
+| SensX 25  | 5x5   | <img src="assets/sensx_5x5.png" width="100"> | `python examples/stream_example.py --port /dev/ttyUSB0 --baud 921600 --rows 5 --cols 5` |
+| SensX 160 | 20x8  | <img src="assets/sensx_20x8.png" width="100"> | `python examples/stream_example.py --port /dev/ttyUSB0 --baud 921600 --rows 20 --cols 8` |
+| SensX 192 | 16x12 | <img src="assets/sensx_16x12.png" width="100"> | `python examples/stream_example.py --port /dev/ttyUSB0 --baud 1500000 --rows 16 --cols 12` |
 
-\* SensX 192 baud rate is unverified — may be 921600 instead of 1500000.
 
 ## Quick Start
 
@@ -90,26 +89,3 @@ with SensX(port="/dev/ttyUSB0") as sensor:
 | `latest_frame`        | Thread-safe copy of the most recent frame        |
 | `latest_timestamp`    | `time.perf_counter()` of the most recent frame   |
 | `on_frame`            | Callback: `fn(frame: np.ndarray, ts: float)`     |
-
-## Troubleshooting
-
-### `build_editable` error on `pip install -e .`
-
-```
-ERROR: Project ... has a 'pyproject.toml' and its build backend is missing the 'build_editable' hook.
-```
-
-Your `setuptools` is too old. Editable installs require **setuptools >= 64.0** (PEP 660). Fix:
-
-```bash
-pip install --upgrade pip setuptools wheel
-pip install -e .
-```
-
-### `command 'python' not found`
-
-On Ubuntu 22.04+, use `python3` instead of `python`, or install the compatibility package:
-
-```bash
-sudo apt install python-is-python3
-```
