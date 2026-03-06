@@ -12,5 +12,8 @@ dependencies = [
     "numpy>=1.21",
 ]
 
+[tool.setuptools.packages.find]
+include = ["sensx*"]
+
 [project.optional-dependencies]
 dev = ["pytest"]
