@@ -40,6 +40,7 @@ python examples/stream_hub.py --port /dev/ttyUSB0 --baud 1500000 --rows 16 --col
 | SensX 160 | 20x8  | <img src="assets/sensx_20x8.png" width="100"> | `python examples/stream_one.py --port /dev/ttyUSB0 --baud 921600 --rows 20 --cols 8` |
 | SensX 192 | 16x12 | <img src="assets/sensx_16x12.png" width="100"> | `python examples/stream_one.py --port /dev/ttyUSB0 --baud 1500000 --rows 16 --cols 12` |
 | SensX 2x192 | 2x(16x12) | To be updated | `python examples/stream_hub.py --port /dev/ttyUSB0 --baud 1500000 --rows 16 --cols 12` |
+| SensX 2x160 | 2x(20x8) | To be updated | `python examples/stream_hub.py --port /dev/ttyUSB0 --baud 921600 --rows 20 --cols 8` |
 
 
 ## Quick Start
@@ -79,7 +80,7 @@ with SensX(port="/dev/ttyUSB0") as sensor:
 
 ## API
 
-### `SensX(port, baud_rate=15_000_000, rows=16, cols=12)`
+### `SensX(port, baud_rate=15_000_000, rows=16, cols=12, init_cmd=DEFAULT_INIT_CMD)`
 
 | Method / Property     | Description                                      |
 |-----------------------|--------------------------------------------------|
@@ -92,6 +93,7 @@ with SensX(port="/dev/ttyUSB0") as sensor:
 | `on_frame`            | Callback: `fn(frame: np.ndarray, ts: float)`     |
 
 
+## Performance
 When testing on windows OS, in the case of Frequency drop:
 1. Open device manager.
 2. Navigate to the Ports and select the device, right click and open properties.

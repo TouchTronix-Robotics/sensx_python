@@ -54,12 +54,31 @@ class SensX:
             sensor.on_frame = lambda frame, ts: print(frame.max())
             sensor.start()
             time.sleep(5)
+
+    Parameters
+    ----------
+    port : str
+        Serial port path (e.g. ``"/dev/ttyUSB0"``).
+    baud_rate : int
+        Baud rate (default 15 000 000).
+    rows, cols : int
+        Grid dimensions (default 16 x 12).
+    serial_timeout : float
+        Serial read timeout in seconds.
+    read_chunk : int
+        Bytes to read per ``serial.read()`` call.
+    init_cmd : bytes or None
+        Command sent on connection to start streaming.  Defaults to the
+        standard Modbus trigger.  Pass ``None`` to skip.
     """
 
     HEADER = b"\xff\xff"
     HEADER_LEN = 2
     BYTES_PER_PIXEL = 2
     CRC_LEN = 1
+
+    #: Default Modbus init command that triggers continuous streaming.
+    DEFAULT_INIT_CMD = bytes.fromhex("01 06 60 10 00 01 57 CF")
 
     def __init__(
         self,
@@ -69,6 +88,7 @@ class SensX:
         cols: int = 12,
         serial_timeout: float = 0.005,
         read_chunk: int = 4096,
+        init_cmd: Optional[bytes] = DEFAULT_INIT_CMD,
     ) -> None:
         self.port = port
         self.baud_rate = baud_rate
@@ -81,6 +101,11 @@ class SensX:
 
         # Serial port (opened immediately so wiring errors surface early)
         self._ser = serial.Serial(port, baud_rate, timeout=serial_timeout)
+
+        # Send init command to start streaming (if provided)
+        if init_cmd is not None:
+            self._ser.write(init_cmd)
+            self._ser.flush()
 
         # Latest frame (thread-safe access via property)
         self._frame = np.zeros((rows, cols), dtype=np.uint16)
