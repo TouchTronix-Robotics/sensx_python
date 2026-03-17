@@ -1,8 +1,7 @@
-"""
-SensXHub -- streaming driver for a TouchTronix Hub PCB with two sensors.
+"""SensXHub -- streaming driver for a TouchTronix Hub PCB with two sensors.
 
 The hub board multiplexes two SensX sensors on a single serial link.
-Sensor-A frames use header 0xAA 0xAA, sensor-B frames use 0xBB 0xBB.
+Sensor-A frames use header ``0xAA 0xAA``, sensor-B frames use ``0xBB 0xBB``.
 
 Hub frame format (NO CRC -- differs from single-sensor SensX)::
 
@@ -10,11 +9,9 @@ Hub frame format (NO CRC -- differs from single-sensor SensX)::
 
 Frames from sensors A and B alternate back-to-back on the wire.
 
-Usage
------
-Blocking::
+Blocking read::
 
-    from sensor_hub import SensXHub
+    from sensx import SensXHub
 
     hub = SensXHub(port="/dev/ttyUSB0")
     while True:
@@ -26,7 +23,7 @@ Blocking::
 
 Callback::
 
-    from sensor_hub import SensXHub
+    from sensx import SensXHub
     import time
 
     hub = SensXHub(port="/dev/ttyUSB0")
@@ -38,7 +35,7 @@ Callback::
 
 Context manager::
 
-    from sensor_hub import SensXHub
+    from sensx import SensXHub
     import time
 
     with SensXHub(port="/dev/ttyUSB0") as hub:
@@ -46,11 +43,6 @@ Context manager::
         hub.on_frame_b = lambda frame, ts: print("B", frame.max())
         hub.start()
         time.sleep(10)
-
-CLI::
-
-    python sensor_hub.py --port /dev/ttyUSB0 --baud 1500000 --rows 16 --cols 12
-    python sensor_hub.py --benchmark
 """
 
 from __future__ import annotations
@@ -72,27 +64,23 @@ HEADER_LEN = 2
 BYTES_PER_PIXEL = 2
 
 
-# ---------------------------------------------------------------------------
-# SensXHub
-# ---------------------------------------------------------------------------
 class SensXHub:
-    """
-    Driver for a TouchTronix Hub PCB hosting **two** SensX sensors.
+    """Driver for a TouchTronix Hub PCB hosting **two** SensX sensors.
 
     Parameters
     ----------
     port : str
         Serial port path (e.g. ``"/dev/ttyUSB0"``).
     baud_rate : int
-        Baud rate (default 15_000_000).
+        Baud rate (default 15 000 000).
     rows_a, cols_a : int
-        Grid dimensions of sensor A (default 16x12).
+        Grid dimensions of sensor A (default 16 x 12).
     rows_b, cols_b : int
         Grid dimensions of sensor B (defaults to same as sensor A).
     serial_timeout : float
         Serial read timeout in seconds.
     read_chunk : int
-        Bytes to read per serial call.
+        Bytes to read per ``serial.read()`` call.
     """
 
     def __init__(
@@ -101,8 +89,8 @@ class SensXHub:
         baud_rate: int = 15_000_000,
         rows_a: int = 16,
         cols_a: int = 12,
-        rows_b: int | None = None,
-        cols_b: int | None = None,
+        rows_b: Optional[int] = None,
+        cols_b: Optional[int] = None,
         serial_timeout: float = 0.005,
         read_chunk: int = 4096,
     ) -> None:
@@ -113,7 +101,7 @@ class SensXHub:
         self.rows_a = rows_a
         self.cols_a = cols_a
         self._payload_size_a = rows_a * cols_a * BYTES_PER_PIXEL
-        self._frame_size_a = HEADER_LEN + self._payload_size_a  # no CRC on hub
+        self._frame_size_a = HEADER_LEN + self._payload_size_a
 
         # Sensor B geometry (defaults to same as A)
         self.rows_b = rows_b if rows_b is not None else rows_a
@@ -123,7 +111,7 @@ class SensXHub:
 
         self._read_chunk = read_chunk
 
-        # Serial port
+        # Serial port (opened immediately so wiring errors surface early)
         self._ser = serial.Serial(port, baud_rate, timeout=serial_timeout)
 
         # Send init command (same as single-sensor driver)
@@ -153,35 +141,40 @@ class SensXHub:
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
+
     @property
     def latest_frame_a(self) -> np.ndarray:
-        """Thread-safe copy of the most recent sensor-A frame."""
+        """Return a copy of the most recent sensor-A frame (thread-safe)."""
         with self._lock_a:
             return self._frame_a.copy()
 
     @property
     def latest_frame_b(self) -> np.ndarray:
-        """Thread-safe copy of the most recent sensor-B frame."""
+        """Return a copy of the most recent sensor-B frame (thread-safe)."""
         with self._lock_b:
             return self._frame_b.copy()
 
     @property
     def latest_timestamp_a(self) -> float:
+        """Timestamp (``time.perf_counter()``) of the most recent sensor-A frame."""
         with self._lock_a:
             return self._ts_a
 
     @property
     def latest_timestamp_b(self) -> float:
+        """Timestamp (``time.perf_counter()``) of the most recent sensor-B frame."""
         with self._lock_b:
             return self._ts_b
 
     @property
     def is_running(self) -> bool:
+        """Whether the background reader thread is alive."""
         return self._thread is not None and self._thread.is_alive()
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
     def start(self) -> None:
         """Start the background reader thread."""
         if self.is_running:
@@ -207,6 +200,10 @@ class SensXHub:
         if self._ser.is_open:
             self._ser.close()
 
+    # ------------------------------------------------------------------
+    # Context manager
+    # ------------------------------------------------------------------
+
     def __enter__(self) -> "SensXHub":
         return self
 
@@ -216,6 +213,7 @@ class SensXHub:
     # ------------------------------------------------------------------
     # Frame parsing (no CRC on hub)
     # ------------------------------------------------------------------
+
     def _parse_frame(self, header: bytes, raw: bytes) -> np.ndarray:
         """Parse raw frame bytes into a numpy array (no CRC check)."""
         if header == HEADER_A:
@@ -228,13 +226,16 @@ class SensXHub:
         return (frame & 0x0FFF).astype(np.uint16)
 
     # ------------------------------------------------------------------
-    # Buffer scanning -- find the next header (AA AA or BB BB)
+    # Buffer scanning
     # ------------------------------------------------------------------
-    def _find_next_header(self, buf: bytearray, start: int = 0):
-        """
-        Find the earliest occurrence of HEADER_A or HEADER_B in buf.
 
-        Returns (index, header_bytes) or (None, None) if neither found.
+    def _find_next_header(
+        self, buf: bytearray, start: int = 0
+    ) -> Tuple[Optional[int], Optional[bytes]]:
+        """Find the earliest occurrence of ``HEADER_A`` or ``HEADER_B``.
+
+        Returns ``(index, header_bytes)`` or ``(None, None)`` if neither
+        is found.
         """
         idx_a = buf.find(HEADER_A, start)
         idx_b = buf.find(HEADER_B, start)
@@ -255,16 +256,17 @@ class SensXHub:
     # ------------------------------------------------------------------
     # Synchronous (blocking) reads
     # ------------------------------------------------------------------
-    def read_frame(self) -> Tuple[bytes, np.ndarray]:
-        """
-        Block until one complete frame (from either sensor) is received.
 
-        Returns ``(header, frame)`` where header is HEADER_A or HEADER_B.
+    def read_frame(self) -> Tuple[bytes, np.ndarray]:
+        """Block until one complete frame (from either sensor) is received.
+
+        Returns ``(header, frame)`` where *header* is :data:`HEADER_A` or
+        :data:`HEADER_B` and *frame* is a ``numpy.ndarray``.
         """
         buf = self._buf
         while True:
             idx, header = self._find_next_header(buf)
-            if idx is not None:
+            if idx is not None and header is not None:
                 fsize = self._frame_size_for(header)
                 if len(buf) >= idx + fsize:
                     raw = bytes(buf[idx : idx + fsize])
@@ -306,10 +308,9 @@ class SensXHub:
                 return frame
 
     def read_frames(
-        self, timeout: float | None = None
+        self, timeout: Optional[float] = None
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """
-        Block until one frame from each sensor has been received.
+        """Block until one frame from each sensor has been received.
 
         Returns ``(frame_a, frame_b)``.  Either may be ``None`` if
         *timeout* expires first.
@@ -332,6 +333,7 @@ class SensXHub:
     # ------------------------------------------------------------------
     # Background reader loop
     # ------------------------------------------------------------------
+
     def _reader_loop(self) -> None:
         buf = bytearray()
         max_frame = max(self._frame_size_a, self._frame_size_b)
@@ -349,7 +351,7 @@ class SensXHub:
             # Parse as many complete frames as possible
             while True:
                 idx, header = self._find_next_header(buf)
-                if idx is None:
+                if idx is None or header is None:
                     if len(buf) > HEADER_LEN:
                         buf[:] = buf[-(HEADER_LEN - 1) :]
                     break
@@ -386,146 +388,3 @@ class SensXHub:
             # Prevent unbounded growth
             if len(buf) > max_frame * 8:
                 buf[:] = buf[-(max_frame * 2) :]
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-def main() -> None:
-    import argparse
-    import sys
-
-    parser = argparse.ArgumentParser(
-        description="Stream TouchTronix Hub dual-sensor data."
-    )
-    parser.add_argument(
-        "--port",
-        default="/dev/ttyUSB0",
-        help="Serial port (default: /dev/ttyUSB0)",
-    )
-    parser.add_argument(
-        "--baud",
-        type=int,
-        default=15_000_000,
-        help="Baud rate (default: 15000000)",
-    )
-    parser.add_argument(
-        "--rows",
-        type=int,
-        default=16,
-        help="Number of rows per sensor (default: 16)",
-    )
-    parser.add_argument(
-        "--cols",
-        type=int,
-        default=12,
-        help="Number of columns per sensor (default: 12)",
-    )
-    parser.add_argument(
-        "--benchmark",
-        action="store_true",
-        help="Measure frame rate without printing grids",
-    )
-    args = parser.parse_args()
-
-    hub = SensXHub(
-        port=args.port,
-        baud_rate=args.baud,
-        rows_a=args.rows,
-        cols_a=args.cols,
-        rows_b=args.rows,
-        cols_b=args.cols,
-    )
-
-    CURSOR_HOME = "\033[H"
-    col_header = "     " + "".join(f"{c:>6}" for c in range(args.cols))
-    col_line = "     " + "------" * args.cols
-
-    frame_count_a = 0
-    frame_count_b = 0
-    t_start = time.perf_counter()
-
-    last_a: Optional[np.ndarray] = None
-    last_b: Optional[np.ndarray] = None
-
-    if not args.benchmark:
-        sys.stdout.write("\033[2J")
-
-    try:
-        while True:
-            header, frame = hub.read_frame()
-
-            if header == HEADER_A:
-                frame_count_a += 1
-                last_a = frame
-            else:
-                frame_count_b += 1
-                last_b = frame
-
-            elapsed = time.perf_counter() - t_start
-            total = frame_count_a + frame_count_b
-            hz_a = frame_count_a / elapsed if elapsed > 0 else 0
-            hz_b = frame_count_b / elapsed if elapsed > 0 else 0
-
-            if args.benchmark:
-                if total % 100 == 0:
-                    print(
-                        f"[{total:>8}]  A={frame_count_a} ({hz_a:.1f} Hz)  "
-                        f"B={frame_count_b} ({hz_b:.1f} Hz)"
-                    )
-            else:
-                lines = [
-                    CURSOR_HOME,
-                    f"SensX Hub  {args.rows}x{args.cols}  |  "
-                    f"A: {frame_count_a} ({hz_a:.1f} Hz)  "
-                    f"B: {frame_count_b} ({hz_b:.1f} Hz)  |  Ctrl+C to stop\n",
-                ]
-
-                # --- Sensor A grid ---
-                lines.append("  ── Sensor A (0xAAAA) ──")
-                lines.append(col_header)
-                lines.append(col_line)
-                if last_a is not None:
-                    for r in range(args.rows):
-                        row_str = "".join(
-                            f"{last_a[r, c]:>6}" for c in range(args.cols)
-                        )
-                        lines.append(f" {r:>2} |{row_str}")
-                else:
-                    lines.append("     (waiting for data...)")
-
-                lines.append("")
-
-                # --- Sensor B grid ---
-                lines.append("  ── Sensor B (0xBBBB) ──")
-                lines.append(col_header)
-                lines.append(col_line)
-                if last_b is not None:
-                    for r in range(args.rows):
-                        row_str = "".join(
-                            f"{last_b[r, c]:>6}" for c in range(args.cols)
-                        )
-                        lines.append(f" {r:>2} |{row_str}")
-                else:
-                    lines.append("     (waiting for data...)")
-
-                sys.stdout.write("\n".join(lines) + "\n")
-                sys.stdout.flush()
-
-    except KeyboardInterrupt:
-        pass
-    finally:
-        hub.close()
-        elapsed = time.perf_counter() - t_start
-        total = frame_count_a + frame_count_b
-        hz_a = frame_count_a / elapsed if elapsed > 0 else 0
-        hz_b = frame_count_b / elapsed if elapsed > 0 else 0
-        print(
-            f"\nStopped. {total} frames in {elapsed:.1f}s  "
-            f"A={frame_count_a} ({hz_a:.1f} Hz)  "
-            f"B={frame_count_b} ({hz_b:.1f} Hz)"
-        )
-
-
-if __name__ == "__main__":
-    main()
