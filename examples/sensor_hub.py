@@ -289,7 +289,7 @@ class SensXHub:
             # Prevent unbounded growth
             max_frame = max(self._frame_size_a, self._frame_size_b)
             if len(buf) > max_frame * 8:
-                buf[:] = buf[-(max_frame * 2):]
+                buf[:] = buf[-(max_frame * 2) :]
 
     def read_frame_a(self) -> np.ndarray:
         """Block until the next sensor-A frame arrives."""
@@ -351,7 +351,7 @@ class SensXHub:
                 idx, header = self._find_next_header(buf)
                 if idx is None:
                     if len(buf) > HEADER_LEN:
-                        buf[:] = buf[-(HEADER_LEN - 1):]
+                        buf[:] = buf[-(HEADER_LEN - 1) :]
                     break
 
                 fsize = self._frame_size_for(header)
@@ -385,7 +385,7 @@ class SensXHub:
 
             # Prevent unbounded growth
             if len(buf) > max_frame * 8:
-                buf[:] = buf[-(max_frame * 2):]
+                buf[:] = buf[-(max_frame * 2) :]
 
 
 # ---------------------------------------------------------------------------
@@ -399,23 +399,31 @@ def main() -> None:
         description="Stream TouchTronix Hub dual-sensor data."
     )
     parser.add_argument(
-        "--port", default="/dev/ttyUSB0",
+        "--port",
+        default="/dev/ttyUSB0",
         help="Serial port (default: /dev/ttyUSB0)",
     )
     parser.add_argument(
-        "--baud", type=int, default=15_000_000,
+        "--baud",
+        type=int,
+        default=15_000_000,
         help="Baud rate (default: 15000000)",
     )
     parser.add_argument(
-        "--rows", type=int, default=16,
+        "--rows",
+        type=int,
+        default=16,
         help="Number of rows per sensor (default: 16)",
     )
     parser.add_argument(
-        "--cols", type=int, default=12,
+        "--cols",
+        type=int,
+        default=12,
         help="Number of columns per sensor (default: 12)",
     )
     parser.add_argument(
-        "--benchmark", action="store_true",
+        "--benchmark",
+        action="store_true",
         help="Measure frame rate without printing grids",
     )
     args = parser.parse_args()
@@ -423,8 +431,10 @@ def main() -> None:
     hub = SensXHub(
         port=args.port,
         baud_rate=args.baud,
-        rows_a=args.rows, cols_a=args.cols,
-        rows_b=args.rows, cols_b=args.cols,
+        rows_a=args.rows,
+        cols_a=args.cols,
+        rows_b=args.rows,
+        cols_b=args.cols,
     )
 
     CURSOR_HOME = "\033[H"
@@ -454,20 +464,21 @@ def main() -> None:
 
             elapsed = time.perf_counter() - t_start
             total = frame_count_a + frame_count_b
-            hz = total / elapsed if elapsed > 0 else 0
+            hz_a = frame_count_a / elapsed if elapsed > 0 else 0
+            hz_b = frame_count_b / elapsed if elapsed > 0 else 0
 
             if args.benchmark:
                 if total % 100 == 0:
                     print(
-                        f"[{total:>8}]  A={frame_count_a}  B={frame_count_b}  "
-                        f"{hz:.1f} Hz total"
+                        f"[{total:>8}]  A={frame_count_a} ({hz_a:.1f} Hz)  "
+                        f"B={frame_count_b} ({hz_b:.1f} Hz)"
                     )
             else:
                 lines = [
                     CURSOR_HOME,
                     f"SensX Hub  {args.rows}x{args.cols}  |  "
-                    f"A: {frame_count_a}  B: {frame_count_b}  |  "
-                    f"{hz:.1f} Hz  |  Ctrl+C to stop\n",
+                    f"A: {frame_count_a} ({hz_a:.1f} Hz)  "
+                    f"B: {frame_count_b} ({hz_b:.1f} Hz)  |  Ctrl+C to stop\n",
                 ]
 
                 # --- Sensor A grid ---
@@ -507,10 +518,12 @@ def main() -> None:
         hub.close()
         elapsed = time.perf_counter() - t_start
         total = frame_count_a + frame_count_b
-        hz = total / elapsed if elapsed > 0 else 0
+        hz_a = frame_count_a / elapsed if elapsed > 0 else 0
+        hz_b = frame_count_b / elapsed if elapsed > 0 else 0
         print(
-            f"\nStopped. {total} frames (A={frame_count_a}, B={frame_count_b}) "
-            f"in {elapsed:.1f}s ({hz:.1f} Hz)"
+            f"\nStopped. {total} frames in {elapsed:.1f}s  "
+            f"A={frame_count_a} ({hz_a:.1f} Hz)  "
+            f"B={frame_count_b} ({hz_b:.1f} Hz)"
         )
 
 
