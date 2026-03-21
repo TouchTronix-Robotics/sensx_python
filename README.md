@@ -38,9 +38,10 @@ python examples/stream_hub.py --port /dev/ttyUSB0 --baud 1500000 --rows 16 --col
 |-----------|-------|-------|-----------------|
 | SensX 25  | 5x5   | <img src="assets/sensx_5x5.png" width="100"> | `python examples/stream_one.py --port /dev/ttyUSB0 --baud 921600 --rows 5 --cols 5` |
 | SensX 160 | 20x8  | <img src="assets/sensx_20x8.png" width="100"> | `python examples/stream_one.py --port /dev/ttyUSB0 --baud 921600 --rows 20 --cols 8` |
+| SensX 187 | 17x11 | <img src="assets/sensx_17x11.png" width="100"> | `python examples/stream_one.py --port /dev/ttyUSB0 --baud 921600 --rows 17 --cols 11` |
 | SensX 192 | 16x12 | <img src="assets/sensx_16x12.png" width="100"> | `python examples/stream_one.py --port /dev/ttyUSB0 --baud 1500000 --rows 16 --cols 12` |
-| SensX 2x192 | 2x(16x12) | To be updated | `python examples/stream_hub.py --port /dev/ttyUSB0 --baud 1500000 --rows 16 --cols 12` |
-| SensX 2x160 | 2x(20x8) | To be updated | `python examples/stream_hub.py --port /dev/ttyUSB0 --baud 921600 --rows 20 --cols 8` |
+| SensX 2x192 | 2x(16x12) | <img src="assets/sensx_2x16x12.png" width="100"> | `python examples/stream_hub.py --port /dev/ttyUSB0 --baud 1500000 --rows 16 --cols 12` |
+| SensX 2x160 | 2x(20x8) | <img src="assets/sensx_2x20x8.png" width="100"> | `python examples/stream_hub.py --port /dev/ttyUSB0 --baud 921600 --rows 20 --cols 8` |
 
 
 ## Quick Start
@@ -91,6 +92,10 @@ with SensX(port="/dev/ttyUSB0") as sensor:
 | `latest_frame`        | Thread-safe copy of the most recent frame        |
 | `latest_timestamp`    | `time.perf_counter()` of the most recent frame   |
 | `on_frame`            | Callback: `fn(frame: np.ndarray, ts: float)`     |
+
+### `SensXHub(port, baud_rate=15_000_000, num_sensors=2, rows=16, cols=12, init_cmd=DEFAULT_INIT_CMD)`
+
+Supports up to 5 sensors (headers `0xAAAA`, `0xBBBB`, `0xCCCC`, `0xDDDD`, `0xEEEE`).
 
 
 ## Performance
