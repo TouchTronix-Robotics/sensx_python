@@ -313,6 +313,9 @@ class SensXHub:
             chunk = self._ser.read(self._read_chunk)
             if chunk:
                 buf += chunk
+            else:
+                # No data available (timeout) -- brief yield to prevent busy spin
+                time.sleep(0.001)
 
             # Prevent unbounded growth
             max_frame = max(self._frame_size_a, self._frame_size_b)
