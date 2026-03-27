@@ -263,6 +263,25 @@ class SensXHub:
             return False
         return buf[idx:idx+2] in (HEADER_A, HEADER_B)
 
+    def _store_frame(
+        self, header: bytes, frame: np.ndarray, ts: float
+    ) -> Optional[Callable[[np.ndarray, float], None]]:
+        """Store frame to internal buffer and return the appropriate callback.
+
+        Thread-safe storage for latest frame and timestamp.
+        Returns the callback (on_frame_a or on_frame_b) to invoke, or None.
+        """
+        if header == HEADER_A:
+            with self._lock_a:
+                self._frame_a[:] = frame
+                self._ts_a = ts
+            return self.on_frame_a
+        else:
+            with self._lock_b:
+                self._frame_b[:] = frame
+                self._ts_b = ts
+            return self.on_frame_b
+
     # ------------------------------------------------------------------
     # Synchronous (blocking) reads
     # ------------------------------------------------------------------
@@ -295,14 +314,7 @@ class SensXHub:
                         del buf[: idx + fsize]
                         frame = self._parse_frame(header, raw)
                         ts = time.perf_counter()
-                        if header == HEADER_A:
-                            with self._lock_a:
-                                self._frame_a[:] = frame
-                                self._ts_a = ts
-                        else:
-                            with self._lock_b:
-                                self._frame_b[:] = frame
-                                self._ts_b = ts
+                        self._store_frame(header, frame, ts)
                         return header, frame
                     else:
                         # False header found inside payload - skip it
@@ -373,6 +385,8 @@ class SensXHub:
             except serial.SerialException:
                 break
             if not chunk:
+                # No data available -- brief yield to prevent busy spin
+                time.sleep(0.001)
                 continue
 
             buf += chunk
@@ -406,23 +420,16 @@ class SensXHub:
 
                 frame = self._parse_frame(header, raw)
                 ts = time.perf_counter()
-
-                if header == HEADER_A:
-                    with self._lock_a:
-                        self._frame_a[:] = frame
-                        self._ts_a = ts
-                    cb = self.on_frame_a
-                else:
-                    with self._lock_b:
-                        self._frame_b[:] = frame
-                        self._ts_b = ts
-                    cb = self.on_frame_b
+                cb = self._store_frame(header, frame, ts)
 
                 if cb is not None:
                     try:
                         cb(frame, ts)
                     except Exception:
-                        logger.exception("Error in %s callback", "on_frame_a" if header == HEADER_A else "on_frame_b")
+                        logger.exception(
+                            "Error in %s callback",
+                            "on_frame_a" if header == HEADER_A else "on_frame_b"
+                        )
 
             # Prevent unbounded growth
             if len(buf) > max_frame * 8:
