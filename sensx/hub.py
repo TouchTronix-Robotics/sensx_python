@@ -371,6 +371,28 @@ class SensXHub:
 
         return got_a, got_b
 
+    def get_frame_a(self) -> Optional[np.ndarray]:
+        """Return the latest frame from sensor A (non-blocking).
+
+        Returns a copy of the most recent frame, or None if no frame received yet.
+        Thread-safe - can be called from any thread while hub is running.
+        """
+        with self._lock_a:
+            if self._ts_a == 0:
+                return None
+            return self._frame_a.copy()
+
+    def get_frame_b(self) -> Optional[np.ndarray]:
+        """Return the latest frame from sensor B (non-blocking).
+
+        Returns a copy of the most recent frame, or None if no frame received yet.
+        Thread-safe - can be called from any thread while hub is running.
+        """
+        with self._lock_b:
+            if self._ts_b == 0:
+                return None
+            return self._frame_b.copy()
+
     # ------------------------------------------------------------------
     # Background reader loop
     # ------------------------------------------------------------------
