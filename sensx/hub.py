@@ -253,6 +253,12 @@ class SensXHub:
     def _frame_size_for(self, header: bytes) -> int:
         return self._frame_size_a if header == HEADER_A else self._frame_size_b
 
+    def _is_valid_header(self, buf: bytearray, idx: int) -> bool:
+        """Check if bytes at position idx form a valid frame header."""
+        if idx + 2 > len(buf):
+            return False
+        return buf[idx:idx+2] in (HEADER_A, HEADER_B)
+
     # ------------------------------------------------------------------
     # Synchronous (blocking) reads
     # ------------------------------------------------------------------
@@ -262,26 +268,42 @@ class SensXHub:
 
         Returns ``(header, frame)`` where *header* is :data:`HEADER_A` or
         :data:`HEADER_B` and *frame* is a ``numpy.ndarray``.
+
+        Uses header validation: the next header must appear at the expected
+        position (current_idx + frame_size) to confirm proper alignment.
         """
         buf = self._buf
         while True:
             idx, header = self._find_next_header(buf)
             if idx is not None and header is not None:
                 fsize = self._frame_size_for(header)
-                if len(buf) >= idx + fsize:
-                    raw = bytes(buf[idx : idx + fsize])
-                    del buf[: idx + fsize]
-                    frame = self._parse_frame(header, raw)
-                    ts = time.perf_counter()
-                    if header == HEADER_A:
-                        with self._lock_a:
-                            self._frame_a[:] = frame
-                            self._ts_a = ts
+
+                # Need enough data for: current frame + next header validation
+                if len(buf) < idx + fsize + HEADER_LEN:
+                    # Not enough data to validate next header
+                    pass
+                else:
+                    # Validate: next bytes should be a valid header
+                    next_header_idx = idx + fsize
+                    if self._is_valid_header(buf, next_header_idx):
+                        # Confirmed proper frame boundary
+                        raw = bytes(buf[idx : idx + fsize])
+                        del buf[: idx + fsize]
+                        frame = self._parse_frame(header, raw)
+                        ts = time.perf_counter()
+                        if header == HEADER_A:
+                            with self._lock_a:
+                                self._frame_a[:] = frame
+                                self._ts_a = ts
+                        else:
+                            with self._lock_b:
+                                self._frame_b[:] = frame
+                                self._ts_b = ts
+                        return header, frame
                     else:
-                        with self._lock_b:
-                            self._frame_b[:] = frame
-                            self._ts_b = ts
-                    return header, frame
+                        # False header found inside payload - skip it
+                        del buf[: idx + 1]
+                        continue
 
             # Not enough data -- read more
             chunk = self._ser.read(self._read_chunk)
@@ -357,11 +379,21 @@ class SensXHub:
                     break
 
                 fsize = self._frame_size_for(header)
-                if len(buf) < idx + fsize:
+
+                # Need enough data for current frame + next header validation
+                if len(buf) < idx + fsize + HEADER_LEN:
                     if idx > 0:
                         del buf[:idx]
                     break
 
+                # Validate: next bytes should be a valid header (or we've hit end of stream)
+                next_header_idx = idx + fsize
+                if not self._is_valid_header(buf, next_header_idx):
+                    # False header found inside payload - skip it
+                    del buf[: idx + 1]
+                    continue
+
+                # Confirmed proper frame boundary
                 raw = bytes(buf[idx : idx + fsize])
                 del buf[: idx + fsize]
 

@@ -31,8 +31,8 @@ def main() -> None:
     parser.add_argument(
         "--baud",
         type=int,
-        default=15_000_000,
-        help="Baud rate (default: 15000000)",
+        default=1_500_000,
+        help="Baud rate (default: 1500000)",
     )
     parser.add_argument(
         "--rows",
@@ -72,6 +72,9 @@ def main() -> None:
     last_a: Optional[np.ndarray] = None
     last_b: Optional[np.ndarray] = None
 
+    display_interval = 1.0 / 30  # throttle display to ~30 fps
+    last_display = 0.0
+
     if not args.benchmark:
         sys.stdout.write("\033[2J")
 
@@ -97,7 +100,10 @@ def main() -> None:
                         f"[{total:>8}]  A={frame_count_a} ({hz_a:.1f} Hz)  "
                         f"B={frame_count_b} ({hz_b:.1f} Hz)"
                     )
+            elif elapsed - last_display < display_interval:
+                continue
             else:
+                last_display = elapsed
                 lines = [
                     CURSOR_HOME,
                     f"SensX Hub  {args.rows}x{args.cols}  |  "
