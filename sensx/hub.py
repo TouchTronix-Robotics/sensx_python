@@ -47,12 +47,16 @@ Context manager::
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Callable, Optional, Tuple
 
 import numpy as np
 import serial
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +76,7 @@ class SensXHub:
     port : str
         Serial port path (e.g. ``"/dev/ttyUSB0"``).
     baud_rate : int
-        Baud rate (default 15 000 000).
+        Baud rate (default 1 500 000).
     rows_a, cols_a : int
         Grid dimensions of sensor A (default 16 x 12).
     rows_b, cols_b : int
@@ -86,7 +90,7 @@ class SensXHub:
     def __init__(
         self,
         port: str,
-        baud_rate: int = 15_000_000,
+        baud_rate: int = 1_500_000,
         rows_a: int = 16,
         cols_a: int = 12,
         rows_b: Optional[int] = None,
@@ -374,8 +378,8 @@ class SensXHub:
             while True:
                 idx, header = self._find_next_header(buf)
                 if idx is None or header is None:
-                    if len(buf) > HEADER_LEN:
-                        buf[:] = buf[-(HEADER_LEN - 1) :]
+                    # Keep buffer for partial header reassembly, don't aggressively trim.
+                    # Unbounded growth prevention happens after this loop.
                     break
 
                 fsize = self._frame_size_for(header)
@@ -415,7 +419,7 @@ class SensXHub:
                     try:
                         cb(frame, ts)
                     except Exception:
-                        pass  # don't let user errors kill the reader
+                        logger.exception("Error in %s callback", "on_frame_a" if header == HEADER_A else "on_frame_b")
 
             # Prevent unbounded growth
             if len(buf) > max_frame * 8:
