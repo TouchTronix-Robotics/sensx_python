@@ -102,7 +102,7 @@ import serial
 from sensx import SensXHub
 
 ROWS, COLS = 5, 5
-CHANNELS = "ABCDE"                        # all five hub connectors
+SENSOR_LETTERS = "ABCDE"                  # hub channels, one per connector
 DEFAULT_BAUD = 921600
 UNITS = {"pressure": "kPa", "adc": "ADC counts", "unknown": "unknown units"}
 CHANGE_THRESHOLD = 20                     # used by the "Changed" column of --check
@@ -113,8 +113,7 @@ SCREEN_REFRESH_HZ = 20                    # live view redraw rate (all frames ar
 def open_hub(port, baud):
     """Open the hub, or exit with a readable message."""
     try:
-        return SensXHub(port, baud_rate=baud, rows_a=ROWS, cols_a=COLS,
-                        channels=CHANNELS)
+        return SensXHub(port, baud_rate=baud, rows_a=ROWS, cols_a=COLS)
     except serial.SerialException as e:
         sys.exit(f"Could not open {port}: {e}\n"
                  "Check the port name, that the hub is plugged in, and that no other "
@@ -139,7 +138,7 @@ def prepare_mode(hub, wanted):
 
 def warn_if_silent(hub, t0, warned):
     """Print a hint once if no frame has arrived for NO_DATA_WARNING_S."""
-    last = max([hub.get_timestamp(ch) for ch in hub.channels] + [t0])
+    last = max([hub.get_timestamp(ch) for ch in SENSOR_LETTERS] + [t0])
     silent = time.perf_counter() - last > NO_DATA_WARNING_S
     if silent and not warned:
         sys.stderr.write(
@@ -150,9 +149,9 @@ def warn_if_silent(hub, t0, warned):
 
 def check(hub, seconds, mode):
     """Collect for `seconds`, then print a summary table and peak maps."""
-    count = {ch: 0 for ch in hub.channels}
-    low = {ch: np.full((ROWS, COLS), 65535, np.uint16) for ch in hub.channels}
-    high = {ch: np.zeros((ROWS, COLS), np.uint16) for ch in hub.channels}
+    count = {ch: 0 for ch in SENSOR_LETTERS}
+    low = {ch: np.full((ROWS, COLS), 65535, np.uint16) for ch in SENSOR_LETTERS}
+    high = {ch: np.zeros((ROWS, COLS), np.uint16) for ch in SENSOR_LETTERS}
 
     def on_frame(ch, frame, ts):
         count[ch] += 1
@@ -175,14 +174,14 @@ def check(hub, seconds, mode):
 
     print(f"\nOutput mode: {mode} ({UNITS[mode]})")
     print(f"\n{'Channel':<9}{'Frames':>8}{'Hz':>8}{'Floor':>8}{'Peak':>8}{'Changed':>10}")
-    for ch in hub.channels:
+    for ch in SENSOR_LETTERS:
         if count[ch] == 0:
             print(f"{ch:<9}{0:>8}   no frames received")
             continue
         changed = int(((high[ch].astype(int) - low[ch].astype(int)) > CHANGE_THRESHOLD).sum())
         print(f"{ch:<9}{count[ch]:>8}{count[ch] / elapsed:>8.1f}{int(low[ch].max()):>8}"
               f"{int(high[ch].max()):>8}{changed:>7}/25")
-    for ch in hub.channels:
+    for ch in SENSOR_LETTERS:
         if count[ch]:
             print(f"\nChannel {ch}: peak value per pixel (row 0 at the top)")
             for r in range(ROWS):
@@ -192,7 +191,7 @@ def check(hub, seconds, mode):
 def draw(hub, count, elapsed, mode, csv_path, rows_logged):
     """Redraw the live view: channels A-C on top, D-E below."""
     out = ["\033[H"]                                  # cursor to top-left
-    rates = "   ".join(f"{ch}: {count[ch] / elapsed:6.1f} Hz" for ch in hub.channels)
+    rates = "   ".join(f"{ch}: {count[ch] / elapsed:6.1f} Hz" for ch in SENSOR_LETTERS)
     out.append(f"{rates}   |   Ctrl+C to stop\033[K")
     out.append(f"Output mode: {mode} ({UNITS[mode]})   |   " +
                (f"Saving to {csv_path}  ({rows_logged} rows)" if csv_path
@@ -218,7 +217,7 @@ def live(hub, csv_path, mode):
     log = open(csv_path, "w", newline="") if csv_path else None
     if log:
         log.write("time_s,sensor,mode," + ",".join(f"p{i}" for i in range(ROWS * COLS)) + "\n")
-    count = {ch: 0 for ch in hub.channels}
+    count = {ch: 0 for ch in SENSOR_LETTERS}
     t0 = time.perf_counter()
 
     def on_frame(ch, frame, ts):

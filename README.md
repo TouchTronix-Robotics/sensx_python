@@ -102,17 +102,17 @@ with SensX(port="/dev/ttyUSB0") as sensor:
 
 ### `SensXHub` with five SensX25 (5x5) sensors
 
-`SensXHub(port, baud_rate=921600, rows_a=5, cols_a=5, channels="ABCDE")`
+`SensXHub(port, baud_rate=921600, rows_a=5, cols_a=5)`
 
 Up to five sensors on one hub, on channels A to E (frame headers `0xAAAA`, `0xBBBB`,
-`0xCCCC`, `0xDDDD`, `0xEEEE`). `channels` lists the hub connectors that have a sensor,
-e.g. `"ABCDE"` or `"ACE"`; frames from other channels are ignored.
+`0xCCCC`, `0xDDDD`, `0xEEEE`). Frames from every connected sensor are delivered; an
+empty connector sends nothing.
 
 ```python
 from sensx import SensXHub
 import time
 
-hub = SensXHub("/dev/ttyUSB0", baud_rate=921600, rows_a=5, cols_a=5, channels="ABCDE")
+hub = SensXHub("/dev/ttyUSB0", baud_rate=921600, rows_a=5, cols_a=5)
 hub.on_frame = lambda channel, frame, ts: print(channel, frame.max())
 hub.start()
 time.sleep(5)
@@ -128,9 +128,8 @@ hub.close()
 | `on_frame_a`, `on_frame_b` | Callbacks for sensor A / B: `fn(frame: np.ndarray, ts: float)` |
 | `get_frame(channel)`  | Latest frame of a sensor (`"A"` to `"E"`), or `None` before the first one |
 | `get_timestamp(channel)` | `time.perf_counter()` of that sensor's latest frame             |
-| `read_frame()`        | Blocking read -- returns `(header, frame)` for the next frame from any sensor; `CHANNEL_OF[header]` gives the letter |
-| `read_frames(timeout=None)` | Blocking read of one frame per configured channel, in channel order |
-| `channels`            | Configured channel letters, e.g. `"ABCDE"`                         |
+| `read_frame()`        | Blocking read -- returns `(header, frame)` for the next frame from any sensor (`header` is `HEADER_A` to `HEADER_E`) |
+| `read_frames(timeout=None)` | Blocking read of one frame from sensor A and one from sensor B: `(frame_a, frame_b)` |
 | `get_output_mode()`   | `"pressure"` or `"adc"`                                            |
 | `set_output_mode(mode)` | Switch every sensor on the hub to `"pressure"` or `"adc"`        |
 
@@ -173,8 +172,8 @@ print(hub.get_output_mode())    # "adc"
 - Through the hub, one command sets all sensors; they cannot be set individually. A sensor
   that is not connected when the mode is set keeps its old mode, so set it again after
   adding a sensor.
-- `set_output_mode()` reads the mode back from every sensor sending data on the configured
-  channels before returning, and raises `RuntimeError` if that cannot be confirmed. Streaming pauses meanwhile (usually about a second).
+- `set_output_mode()` reads the mode back from every connected sensor before returning,
+  and raises `RuntimeError` if that cannot be confirmed. Streaming pauses meanwhile (usually about a second).
 
 
 ## Performance

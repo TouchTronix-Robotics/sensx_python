@@ -23,19 +23,19 @@ sensor; an empty connector sends nothing and the other letters stay the same.
 
 Blocking read (five SensX25 (5x5) sensors, 921 600 baud)::
 
-    from sensx import SensXHub, CHANNEL_OF
+    from sensx import SensXHub
 
-    hub = SensXHub("COM7", baud_rate=921600, rows_a=5, cols_a=5, channels="ABCDE")
+    hub = SensXHub("COM7", baud_rate=921600, rows_a=5, cols_a=5)
     while True:
-        header, frame = hub.read_frame()
-        print(CHANNEL_OF[header], frame.max())
+        header, frame = hub.read_frame()     # header: HEADER_A ... HEADER_E
+        print(header.hex(), frame.max())
 
 Callback::
 
     from sensx import SensXHub
     import time
 
-    hub = SensXHub("COM7", baud_rate=921600, rows_a=5, cols_a=5, channels="ABCDE")
+    hub = SensXHub("COM7", baud_rate=921600, rows_a=5, cols_a=5)
     hub.on_frame = lambda channel, frame, ts: print(channel, frame.max())
     hub.start()
     time.sleep(10)
@@ -46,7 +46,7 @@ Context manager::
     from sensx import SensXHub
     import time
 
-    with SensXHub("COM7", baud_rate=921600, rows_a=5, cols_a=5, channels="ABCDE") as hub:
+    with SensXHub("COM7", baud_rate=921600, rows_a=5, cols_a=5) as hub:
         hub.on_frame = lambda channel, frame, ts: print(channel, frame.max())
         hub.start()
         time.sleep(10)
@@ -89,10 +89,9 @@ HEADER_C = b"\xcc\xcc"
 HEADER_D = b"\xdd\xdd"
 HEADER_E = b"\xee\xee"
 HEADERS = (HEADER_A, HEADER_B, HEADER_C, HEADER_D, HEADER_E)
-CHANNELS = "ABCDE"
-#: Channel letter for each header, e.g. ``CHANNEL_OF[HEADER_C] == "C"``.
-CHANNEL_OF: Dict[bytes, str] = dict(zip(HEADERS, CHANNELS))
-CHANNEL_HEADER: Dict[str, bytes] = dict(zip(CHANNELS, HEADERS))
+_LETTERS = "ABCDE"
+_LETTER_OF: Dict[bytes, str] = dict(zip(HEADERS, _LETTERS))
+_HEADER_OF: Dict[str, bytes] = dict(zip(_LETTERS, HEADERS))
 HEADER_LEN = 2
 BYTES_PER_PIXEL = 2
 
@@ -128,17 +127,14 @@ class SensXHub:
     baud_rate : int
         Baud rate (default 1 500 000). Use 921 600 for SensX25 (5x5) sensors.
     rows_a, cols_a : int
-        Grid dimensions of sensor A (default 16 x 12).
+        Grid dimensions of sensor A (default 16 x 12). Sensors C, D and E
+        use the same grid as sensor A.
     rows_b, cols_b : int
         Grid dimensions of sensor B (defaults to same as sensor A).
     serial_timeout : float
         Serial read timeout in seconds.
     read_chunk : int
         Bytes to read per ``serial.read()`` call.
-    channels : str
-        Hub channels with a sensor connected, e.g. ``"ABCDE"`` or ``"ACE"``
-        (default ``"AB"``). Frames from other channels are ignored. Sensors
-        C, D and E use the same grid as sensor A.
     """
 
     def __init__(
@@ -151,17 +147,9 @@ class SensXHub:
         cols_b: Optional[int] = None,
         serial_timeout: float = 0.005,
         read_chunk: int = 4096,
-        channels: str = "AB",
     ) -> None:
-        wanted = channels.upper()
-        if not wanted or set(wanted) - set(CHANNELS) or len(set(wanted)) != len(wanted):
-            raise ValueError(
-                f"channels must be distinct letters from {CHANNELS!r}, got {channels!r}"
-            )
-
         self.port = port
         self.baud_rate = baud_rate
-        self._channels = "".join(c for c in CHANNELS if c in wanted)
 
         # Sensor geometry (B defaults to A; C-E always follow A)
         self.rows_a = rows_a
@@ -176,10 +164,6 @@ class SensXHub:
             h: HEADER_LEN + rows * cols * BYTES_PER_PIXEL
             for h, (rows, cols) in self._shape.items()
         }
-        # All five headers are recognised for alignment, but only frames
-        # from the configured channels are delivered.
-        self._active = frozenset(CHANNEL_HEADER[c] for c in self._channels)
-
         self._read_chunk = read_chunk
 
         # Serial port (opened immediately so wiring errors surface early)
@@ -216,11 +200,6 @@ class SensXHub:
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
-
-    @property
-    def channels(self) -> str:
-        """Configured channel letters, e.g. ``"ABCDE"`` for five sensors."""
-        return self._channels
 
     @property
     def latest_frame_a(self) -> np.ndarray:
@@ -353,8 +332,7 @@ class SensXHub:
             # Confirmed proper frame boundary
             raw = bytes(buf[:fsize])
             del buf[:fsize]
-            if header in self._active:
-                frames.append((header, self._parse_frame(header, raw)))
+            frames.append((header, self._parse_frame(header, raw)))
 
     # ------------------------------------------------------------------
     # Frame storage and callbacks
@@ -369,7 +347,7 @@ class SensXHub:
     def _dispatch(self, header: bytes, frame: np.ndarray, ts: float) -> None:
         """Store a frame and run the user callbacks for it."""
         self._store_frame(header, frame, ts)
-        channel = CHANNEL_OF[header]
+        channel = _LETTER_OF[header]
         if header == HEADER_A:
             per_sensor = self.on_frame_a
         elif header == HEADER_B:
@@ -395,8 +373,8 @@ class SensXHub:
         """Block until one complete frame (from any sensor) is received.
 
         Returns ``(header, frame)`` where *header* is one of
-        :data:`HEADER_A` ... :data:`HEADER_E` (``CHANNEL_OF[header]`` gives the
-        letter) and *frame* is a ``numpy.ndarray``.
+        :data:`HEADER_A` ... :data:`HEADER_E` and *frame* is a
+        ``numpy.ndarray``.
 
         Frames are returned in arrival order. Every frame in each chunk read
         from the port is kept, so none are lost while the caller keeps up;
@@ -434,25 +412,27 @@ class SensXHub:
 
     def read_frames(
         self, timeout: Optional[float] = None
-    ) -> Tuple[Optional[np.ndarray], ...]:
-        """Block until one frame from each configured channel has been received.
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """Block until one frame from each of sensors A and B has been received.
 
-        Returns one frame per channel in :attr:`channels` order:
-        ``(frame_a, frame_b)`` by default, ``(frame_a, ..., frame_e)`` for
-        ``channels="ABCDE"``. Any entry may be ``None`` if *timeout* expires
-        first; pass a timeout if a configured connector may be empty.
+        Returns ``(frame_a, frame_b)``.  Either may be ``None`` if
+        *timeout* expires first. For all sensors use :meth:`get_frame` or
+        the :attr:`on_frame` callback.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
-        wanted = [CHANNEL_HEADER[c] for c in self._channels]
-        got: Dict[bytes, np.ndarray] = {}
+        got_a: Optional[np.ndarray] = None
+        got_b: Optional[np.ndarray] = None
 
-        while len(got) < len(wanted):
+        while got_a is None or got_b is None:
             if deadline is not None and time.monotonic() > deadline:
                 break
             header, frame = self.read_frame()
-            got.setdefault(header, frame)
+            if header == HEADER_A and got_a is None:
+                got_a = frame
+            elif header == HEADER_B and got_b is None:
+                got_b = frame
 
-        return tuple(got.get(h) for h in wanted)
+        return got_a, got_b
 
     def get_frame(self, channel: str) -> Optional[np.ndarray]:
         """Return the latest frame from a sensor (non-blocking).
@@ -494,9 +474,9 @@ class SensXHub:
 
     def _header_for(self, channel: str) -> bytes:
         letter = channel.upper()
-        if len(letter) != 1 or letter not in CHANNELS:
-            raise ValueError(f"channel must be one of {', '.join(CHANNELS)}; got {channel!r}")
-        return CHANNEL_HEADER[letter]
+        if len(letter) != 1 or letter not in _LETTERS:
+            raise ValueError(f"channel must be one of {', '.join(_LETTERS)}; got {channel!r}")
+        return _HEADER_OF[letter]
 
     # ------------------------------------------------------------------
     # Output mode (SensX25)
@@ -514,8 +494,7 @@ class SensXHub:
 
         if not live:
             raise RuntimeError(
-                f"No frames from channels {self._channels}; check the port, "
-                "baud rate and connections."
+                "No frames from the hub; check the port, baud rate and connections."
             )
         if not values:
             raise RuntimeError(
@@ -531,7 +510,6 @@ class SensXHub:
                 f"(replies: {[_MODE_NAMES[v] for v in values]}). "
                 "Use set_output_mode() to set them all."
             )
-        self._warn_silent(live)
         if not complete:
             logger.warning(
                 "Output mode heard from fewer than the %d sensors sending data.",
@@ -547,10 +525,9 @@ class SensXHub:
         cannot be set individually through the hub. The setting is stored in
         the sensors and kept through power-off.
 
-        The new mode is read back from every sensor that is sending data on
-        the configured channels before returning; configured channels that
-        send nothing are logged as a warning. If the sensors are already in
-        *mode*, nothing is written. Streaming pauses (usually about a second,
+        The new mode is read back from every sensor that is sending frames
+        before returning. If the sensors are already in *mode*, nothing is
+        written. Streaming pauses (usually about a second,
         at most several seconds) and resumes on its own; frames received
         during the change are discarded. Raises RuntimeError if the change
         cannot be confirmed.
@@ -568,7 +545,7 @@ class SensXHub:
             values, complete, live = self._read_output_mode()
             if not live:
                 raise RuntimeError(
-                    f"No frames from channels {self._channels}; nothing was changed. "
+                    "No frames from the hub; nothing was changed. "
                     "Check the port, baud rate and connections."
                 )
             if not values:
@@ -581,7 +558,6 @@ class SensXHub:
                 raise RuntimeError(
                     f"Unexpected output-mode value(s) {unknown}; nothing was changed."
                 )
-            self._warn_silent(live)
             if complete and set(values) == {target}:
                 return
 
@@ -606,10 +582,10 @@ class SensXHub:
         Every connected sensor answers, but behind the hub a reply is now
         and then lost on the way back, so the question is repeated until a
         single read returns an answer from every sensor that is sending
-        frames on the configured channels.
+        frames.
 
         Returns all values heard, whether such a complete read happened, and
-        the configured channels seen sending frames.
+        the channels seen sending frames.
         """
         query = _modbus.request(
             _MODBUS_ADDRESS, _modbus.FUNC_READ, _modbus.REG_OUTPUT_MODE, 1
@@ -618,7 +594,7 @@ class SensXHub:
         live: Set[str] = set()
         for attempt in range(1, _MAX_MODE_READS + 1):
             rx = self._transact(query)
-            live |= {CHANNEL_OF[h] for h, _ in self._extract_frames(bytearray(rx))}
+            live |= {_LETTER_OF[h] for h, _ in self._extract_frames(bytearray(rx))}
             values = _modbus.find_read_replies(rx, _MODBUS_ADDRESS)
             heard += values
             if live and len(values) >= len(live):
@@ -626,15 +602,6 @@ class SensXHub:
             if not heard and attempt >= _MAX_SILENT_READS:
                 break  # nothing answers at all
         return heard, False, live
-
-    def _warn_silent(self, live: Set[str]) -> None:
-        """Log configured channels that sent no frames (empty connectors)."""
-        silent = [c for c in self._channels if c not in live]
-        if silent:
-            logger.warning(
-                "No data on channel(s) %s; is a sensor connected there?",
-                ", ".join(silent),
-            )
 
     def _transact(self, request: bytes) -> bytes:
         """Send a settings command and return everything received after it."""
