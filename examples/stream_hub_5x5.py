@@ -99,10 +99,11 @@ import time
 import numpy as np
 import serial
 
-from sensx import SensXHub
+from sensx import SensXHub, HEADER_A, HEADER_B, HEADER_C, HEADER_D, HEADER_E
 
 ROWS, COLS = 5, 5
-SENSOR_LETTERS = "ABCDE"                  # hub channels, one per connector
+LETTER = {HEADER_A: "A", HEADER_B: "B", HEADER_C: "C",   # display name of each
+          HEADER_D: "D", HEADER_E: "E"}                  # hub channel (connector)
 DEFAULT_BAUD = 921600
 UNITS = {"pressure": "kPa", "adc": "ADC counts", "unknown": "unknown units"}
 CHANGE_THRESHOLD = 20                     # used by the "Changed" column of --check
@@ -136,10 +137,9 @@ def prepare_mode(hub, wanted):
         return "unknown"
 
 
-def warn_if_silent(hub, t0, warned):
+def warn_if_silent(last_frame_time, warned):
     """Print a hint once if no frame has arrived for NO_DATA_WARNING_S."""
-    last = max([hub.get_timestamp(ch) for ch in SENSOR_LETTERS] + [t0])
-    silent = time.perf_counter() - last > NO_DATA_WARNING_S
+    silent = time.perf_counter() - last_frame_time > NO_DATA_WARNING_S
     if silent and not warned:
         sys.stderr.write(
             f"\nNo frames for {NO_DATA_WARNING_S:g} s. Check that the hub is powered, "
@@ -149,24 +149,26 @@ def warn_if_silent(hub, t0, warned):
 
 def check(hub, seconds, mode):
     """Collect for `seconds`, then print a summary table and peak maps."""
-    count = {ch: 0 for ch in SENSOR_LETTERS}
-    low = {ch: np.full((ROWS, COLS), 65535, np.uint16) for ch in SENSOR_LETTERS}
-    high = {ch: np.zeros((ROWS, COLS), np.uint16) for ch in SENSOR_LETTERS}
+    count = {h: 0 for h in LETTER}
+    low = {h: np.full((ROWS, COLS), 65535, np.uint16) for h in LETTER}
+    high = {h: np.zeros((ROWS, COLS), np.uint16) for h in LETTER}
+    t0 = time.perf_counter()
+    last = [t0]                                       # time of the latest frame
 
-    def on_frame(ch, frame, ts):
-        count[ch] += 1
-        np.minimum(low[ch], frame, out=low[ch])
-        np.maximum(high[ch], frame, out=high[ch])
+    def on_frame(header, frame, ts):
+        count[header] += 1
+        np.minimum(low[header], frame, out=low[header])
+        np.maximum(high[header], frame, out=high[header])
+        last[0] = ts
 
     hub.on_frame = on_frame
     print(f"Recording {seconds:g} s - press the sensors now (Ctrl+C ends early)...")
-    t0 = time.perf_counter()
     hub.start()
     warned = False
     try:
         while time.perf_counter() - t0 < seconds:
             time.sleep(0.1)
-            warned = warn_if_silent(hub, t0, warned)
+            warned = warn_if_silent(last[0], warned)
     except KeyboardInterrupt:
         print("\nStopped early.")
     hub.stop()
@@ -174,36 +176,36 @@ def check(hub, seconds, mode):
 
     print(f"\nOutput mode: {mode} ({UNITS[mode]})")
     print(f"\n{'Channel':<9}{'Frames':>8}{'Hz':>8}{'Floor':>8}{'Peak':>8}{'Changed':>10}")
-    for ch in SENSOR_LETTERS:
-        if count[ch] == 0:
+    for h, ch in LETTER.items():
+        if count[h] == 0:
             print(f"{ch:<9}{0:>8}   no frames received")
             continue
-        changed = int(((high[ch].astype(int) - low[ch].astype(int)) > CHANGE_THRESHOLD).sum())
-        print(f"{ch:<9}{count[ch]:>8}{count[ch] / elapsed:>8.1f}{int(low[ch].max()):>8}"
-              f"{int(high[ch].max()):>8}{changed:>7}/25")
-    for ch in SENSOR_LETTERS:
-        if count[ch]:
+        changed = int(((high[h].astype(int) - low[h].astype(int)) > CHANGE_THRESHOLD).sum())
+        print(f"{ch:<9}{count[h]:>8}{count[h] / elapsed:>8.1f}{int(low[h].max()):>8}"
+              f"{int(high[h].max()):>8}{changed:>7}/25")
+    for h, ch in LETTER.items():
+        if count[h]:
             print(f"\nChannel {ch}: peak value per pixel (row 0 at the top)")
             for r in range(ROWS):
-                print("  " + "".join(f"{int(v):>7}" for v in high[ch][r]))
+                print("  " + "".join(f"{int(v):>7}" for v in high[h][r]))
 
 
 def draw(hub, count, elapsed, mode, csv_path, rows_logged):
     """Redraw the live view: channels A-C on top, D-E below."""
     out = ["\033[H"]                                  # cursor to top-left
-    rates = "   ".join(f"{ch}: {count[ch] / elapsed:6.1f} Hz" for ch in SENSOR_LETTERS)
+    rates = "   ".join(f"{ch}: {count[h] / elapsed:6.1f} Hz" for h, ch in LETTER.items())
     out.append(f"{rates}   |   Ctrl+C to stop\033[K")
     out.append(f"Output mode: {mode} ({UNITS[mode]})   |   " +
                (f"Saving to {csv_path}  ({rows_logged} rows)" if csv_path
                 else "Not saving (add --csv FILE to record)") + "\033[K")
-    for group in ("ABC", "DE"):
+    for group in ((HEADER_A, HEADER_B, HEADER_C), (HEADER_D, HEADER_E)):
         out.append("\033[K")
-        out.append("".join(f"  Channel {ch}".ljust(32) for ch in group) + "\033[K")
-        frames = {ch: hub.get_frame(ch) for ch in group}
+        out.append("".join(f"  Channel {LETTER[h]}".ljust(32) for h in group) + "\033[K")
+        frames = {h: hub.get_frame(h) for h in group}
         for r in range(ROWS):
             line = ""
-            for ch in group:
-                f = frames[ch]
+            for h in group:
+                f = frames[h]
                 cells = ("".join(f"{int(v):>6}" for v in f[r]) if f is not None
                          else "   (no data yet)".ljust(30))
                 line += cells + "  "
@@ -217,13 +219,15 @@ def live(hub, csv_path, mode):
     log = open(csv_path, "w", newline="") if csv_path else None
     if log:
         log.write("time_s,sensor,mode," + ",".join(f"p{i}" for i in range(ROWS * COLS)) + "\n")
-    count = {ch: 0 for ch in SENSOR_LETTERS}
+    count = {h: 0 for h in LETTER}
     t0 = time.perf_counter()
+    last = [t0]                                       # time of the latest frame
 
-    def on_frame(ch, frame, ts):
-        count[ch] += 1
+    def on_frame(header, frame, ts):
+        count[header] += 1
+        last[0] = ts
         if log:
-            log.write(f"{ts - t0:.4f},{ch},{mode}," +
+            log.write(f"{ts - t0:.4f},{LETTER[header]},{mode}," +
                       ",".join(str(int(v)) for v in frame.ravel()) + "\n")
 
     hub.on_frame = on_frame
@@ -236,7 +240,7 @@ def live(hub, csv_path, mode):
             time.sleep(1.0 / SCREEN_REFRESH_HZ)
             now = time.perf_counter()
             draw(hub, count, max(now - t0, 1e-9), mode, csv_path, sum(count.values()))
-            warned = warn_if_silent(hub, t0, warned)
+            warned = warn_if_silent(last[0], warned)
             if log and now - last_flush >= 1.0:       # keep the file current on disk
                 log.flush()
                 last_flush = now

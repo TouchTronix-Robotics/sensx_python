@@ -104,16 +104,16 @@ with SensX(port="/dev/ttyUSB0") as sensor:
 
 `SensXHub(port, baud_rate=921600, rows_a=5, cols_a=5)`
 
-Up to five sensors on one hub, on channels A to E (frame headers `0xAAAA`, `0xBBBB`,
-`0xCCCC`, `0xDDDD`, `0xEEEE`). Frames from every connected sensor are delivered; an
-empty connector sends nothing.
+Up to five sensors on one hub, on channels A to E (frame headers `HEADER_A` = `0xAAAA`
+to `HEADER_E` = `0xEEEE`). Frames from every connected sensor are delivered; an empty
+connector sends nothing.
 
 ```python
 from sensx import SensXHub
 import time
 
 hub = SensXHub("/dev/ttyUSB0", baud_rate=921600, rows_a=5, cols_a=5)
-hub.on_frame = lambda channel, frame, ts: print(channel, frame.max())
+hub.on_frame = lambda header, frame, ts: print(header.hex(), frame.max())
 hub.start()
 time.sleep(5)
 hub.close()
@@ -124,10 +124,10 @@ hub.close()
 | `start()`             | Start background reader thread                                     |
 | `stop()`              | Stop the reader thread                                             |
 | `close()`             | Stop and close the serial port                                     |
-| `on_frame`            | Callback for every sensor: `fn(channel: str, frame: np.ndarray, ts: float)` |
+| `on_frame`            | Callback for every sensor: `fn(header: bytes, frame: np.ndarray, ts: float)` |
 | `on_frame_a`, `on_frame_b` | Callbacks for sensor A / B: `fn(frame: np.ndarray, ts: float)` |
-| `get_frame(channel)`  | Latest frame of a sensor (`"A"` to `"E"`), or `None` before the first one |
-| `get_timestamp(channel)` | `time.perf_counter()` of that sensor's latest frame             |
+| `get_frame(header)`   | Latest frame of a sensor (`HEADER_A` to `HEADER_E`), or `None` before the first one |
+| `connected`           | Headers of the sensors that have sent frames, e.g. `(HEADER_A, HEADER_C)` |
 | `read_frame()`        | Blocking read -- returns `(header, frame)` for the next frame from any sensor (`header` is `HEADER_A` to `HEADER_E`) |
 | `read_frames(timeout=None)` | Blocking read of one frame from sensor A and one from sensor B: `(frame_a, frame_b)` |
 | `get_output_mode()`   | `"pressure"` or `"adc"`                                            |

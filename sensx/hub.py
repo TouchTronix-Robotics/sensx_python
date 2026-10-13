@@ -1,25 +1,16 @@
 """SensXHub -- streaming driver for a TouchTronix Hub PCB with up to five sensors.
 
 The hub board multiplexes up to five SensX sensors on a single serial link.
-Every sensor has its own frame header:
-
-    ======  ==============
-    Sensor  Header
-    ======  ==============
-    A       ``0xAA 0xAA``
-    B       ``0xBB 0xBB``
-    C       ``0xCC 0xCC``
-    D       ``0xDD 0xDD``
-    E       ``0xEE 0xEE``
-    ======  ==============
+Every sensor has its own frame header, ``HEADER_A`` (``0xAA 0xAA``) to
+``HEADER_E`` (``0xEE 0xEE``), one per hub connector. An empty connector sends
+nothing, so the sensors that send frames are the ones connected.
 
 Hub frame format (NO CRC -- differs from single-sensor SensX)::
 
     [header: 2 bytes][payload: rows*cols*2 bytes, 12-bit big-endian]
 
 Frames from the sensors follow each other back-to-back on the wire, in no
-fixed channel order. Each letter belongs to a connector on the hub, not to a
-sensor; an empty connector sends nothing and the other letters stay the same.
+fixed order.
 
 Blocking read (five SensX25 (5x5) sensors, 921 600 baud)::
 
@@ -35,19 +26,8 @@ Callback::
     from sensx import SensXHub
     import time
 
-    hub = SensXHub("COM7", baud_rate=921600, rows_a=5, cols_a=5)
-    hub.on_frame = lambda channel, frame, ts: print(channel, frame.max())
-    hub.start()
-    time.sleep(10)
-    hub.close()
-
-Context manager::
-
-    from sensx import SensXHub
-    import time
-
     with SensXHub("COM7", baud_rate=921600, rows_a=5, cols_a=5) as hub:
-        hub.on_frame = lambda channel, frame, ts: print(channel, frame.max())
+        hub.on_frame = lambda header, frame, ts: print(header.hex(), frame.max())
         hub.start()
         time.sleep(10)
 
@@ -69,12 +49,10 @@ import threading
 import time
 from collections import deque
 from contextlib import contextmanager
-from typing import Callable, Deque, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Callable, Deque, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import serial
-
-from sensx import _modbus
 
 
 logger = logging.getLogger(__name__)
@@ -89,32 +67,56 @@ HEADER_C = b"\xcc\xcc"
 HEADER_D = b"\xdd\xdd"
 HEADER_E = b"\xee\xee"
 HEADERS = (HEADER_A, HEADER_B, HEADER_C, HEADER_D, HEADER_E)
-_LETTERS = "ABCDE"
-_LETTER_OF: Dict[bytes, str] = dict(zip(HEADERS, _LETTERS))
-_HEADER_OF: Dict[str, bytes] = dict(zip(_LETTERS, HEADERS))
 HEADER_LEN = 2
 BYTES_PER_PIXEL = 2
 
-#: Output modes accepted by :meth:`SensXHub.set_output_mode`.
-OUTPUT_MODES: Dict[str, int] = {"adc": 0, "pressure": 1}
-_MODE_NAMES = {value: name for name, value in OUTPUT_MODES.items()}
-
-#: All sensors answer on Modbus address 1.
-_MODBUS_ADDRESS = 1
-#: Seconds to listen for replies after each settings command.
+# Output mode (SensX25): Modbus register 0x6005 at address 1, value = index
+# in _MODES (0 = ADC counts, 1 = pressure).
+_MODES = ("adc", "pressure")
+_MODE_REGISTER = 0x6005
+#: Seconds to listen for replies after a settings command.
 _REPLY_WINDOW_S = 0.2
-#: The sensors ignore commands for a moment after a write; wait this long
-#: after any write before sending the next settings command.
+#: The sensors ignore a command sent right after a write; wait this long.
 _SETTLE_S = 0.3
-#: Reads of the output mode before giving up on hearing from every sensor.
-#: Behind the hub some reads miss a reply, sometimes several in a row.
+#: The hub loses some replies, sometimes several reads in a row.
 _MAX_MODE_READS = 20
-#: Reads with no reply at all before deciding the sensors don't answer.
-_MAX_SILENT_READS = 4
 
 #: Frames held for ``read_frame()`` when the caller reads slower than the hub
 #: sends; beyond this the oldest frames are dropped.
 _MAX_PENDING_FRAMES = 1024
+
+
+def _crc16(data: bytes) -> bytes:
+    """Modbus CRC-16 (poly 0xA001, init 0xFFFF), low byte first."""
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            if crc & 0x01:
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc >>= 1
+    return bytes([crc & 0xFF, crc >> 8])
+
+
+def _mode_request(function: int, value: int) -> bytes:
+    """Modbus request for the output-mode register: read (0x03) or write (0x06)."""
+    body = bytes([1, function, _MODE_REGISTER >> 8, _MODE_REGISTER & 0xFF, 0, value])
+    return body + _crc16(body)
+
+
+def _mode_replies(rx: bytes) -> List[int]:
+    """Values of every valid read reply ``01 03 02 hi lo crc crc`` in *rx*.
+
+    The replies arrive inside the frame stream, one per sensor.
+    """
+    values: List[int] = []
+    i = rx.find(b"\x01\x03\x02")
+    while 0 <= i <= len(rx) - 7:
+        if _crc16(rx[i : i + 5]) == rx[i + 5 : i + 7]:
+            values.append((rx[i + 3] << 8) | rx[i + 4])
+        i = rx.find(b"\x01\x03\x02", i + 1)
+    return values
 
 
 class SensXHub:
@@ -175,7 +177,7 @@ class SensXHub:
         self._ser.flush()
         self._last_write = time.perf_counter()
 
-        # Latest frame and timestamp per sensor (thread-safe)
+        # Latest frame and timestamp, pre-allocated for all five sensors
         self._lock = threading.Lock()
         self._frames: Dict[bytes, np.ndarray] = {
             h: np.zeros(shape, dtype=np.uint16) for h, shape in self._shape.items()
@@ -193,13 +195,19 @@ class SensXHub:
         self._stop_event = threading.Event()
 
         # User callbacks
-        self.on_frame: Optional[Callable[[str, np.ndarray, float], None]] = None
+        self.on_frame: Optional[Callable[[bytes, np.ndarray, float], None]] = None
         self.on_frame_a: Optional[Callable[[np.ndarray, float], None]] = None
         self.on_frame_b: Optional[Callable[[np.ndarray, float], None]] = None
 
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
+
+    @property
+    def connected(self) -> Tuple[bytes, ...]:
+        """Headers of the sensors that have sent frames, e.g. ``(HEADER_A, HEADER_C)``."""
+        with self._lock:
+            return tuple(h for h in HEADERS if self._timestamps[h])
 
     @property
     def latest_frame_a(self) -> np.ndarray:
@@ -216,12 +224,14 @@ class SensXHub:
     @property
     def latest_timestamp_a(self) -> float:
         """Timestamp (``time.perf_counter()``) of the most recent sensor-A frame."""
-        return self.get_timestamp("A")
+        with self._lock:
+            return self._timestamps[HEADER_A]
 
     @property
     def latest_timestamp_b(self) -> float:
         """Timestamp (``time.perf_counter()``) of the most recent sensor-B frame."""
-        return self.get_timestamp("B")
+        with self._lock:
+            return self._timestamps[HEADER_B]
 
     @property
     def is_running(self) -> bool:
@@ -347,23 +357,13 @@ class SensXHub:
     def _dispatch(self, header: bytes, frame: np.ndarray, ts: float) -> None:
         """Store a frame and run the user callbacks for it."""
         self._store_frame(header, frame, ts)
-        channel = _LETTER_OF[header]
-        if header == HEADER_A:
-            per_sensor = self.on_frame_a
-        elif header == HEADER_B:
-            per_sensor = self.on_frame_b
-        else:
-            per_sensor = None
-        if per_sensor is not None:
-            try:
-                per_sensor(frame, ts)
-            except Exception:
-                logger.exception("Error in on_frame_%s callback", channel.lower())
-        if self.on_frame is not None:
-            try:
-                self.on_frame(channel, frame, ts)
-            except Exception:
-                logger.exception("Error in on_frame callback")
+        per_sensor = {HEADER_A: self.on_frame_a, HEADER_B: self.on_frame_b}.get(header)
+        for cb, args in ((per_sensor, (frame, ts)), (self.on_frame, (header, frame, ts))):
+            if cb is not None:
+                try:
+                    cb(*args)
+                except Exception:
+                    logger.exception("Error in frame callback")
 
     # ------------------------------------------------------------------
     # Synchronous (blocking) reads
@@ -416,8 +416,7 @@ class SensXHub:
         """Block until one frame from each of sensors A and B has been received.
 
         Returns ``(frame_a, frame_b)``.  Either may be ``None`` if
-        *timeout* expires first. For all sensors use :meth:`get_frame` or
-        the :attr:`on_frame` callback.
+        *timeout* expires first.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         got_a: Optional[np.ndarray] = None
@@ -434,27 +433,17 @@ class SensXHub:
 
         return got_a, got_b
 
-    def get_frame(self, channel: str) -> Optional[np.ndarray]:
+    def get_frame(self, header: bytes) -> Optional[np.ndarray]:
         """Return the latest frame from a sensor (non-blocking).
 
-        *channel* is ``"A"`` ... ``"E"``. Returns a copy of the most recent
-        frame, or None if no frame received yet. Thread-safe - can be called
-        from any thread while hub is running.
+        *header* is :data:`HEADER_A` ... :data:`HEADER_E`. Returns a copy of
+        the most recent frame, or None if no frame received yet.
+        Thread-safe - can be called from any thread while hub is running.
         """
-        header = self._header_for(channel)
         with self._lock:
             if self._timestamps[header] == 0:
                 return None
             return self._frames[header].copy()
-
-    def get_timestamp(self, channel: str) -> float:
-        """Timestamp (``time.perf_counter()``) of a sensor's most recent frame.
-
-        Returns 0.0 if no frame has been received yet.
-        """
-        header = self._header_for(channel)
-        with self._lock:
-            return self._timestamps[header]
 
     def get_frame_a(self) -> Optional[np.ndarray]:
         """Return the latest frame from sensor A (non-blocking).
@@ -462,7 +451,7 @@ class SensXHub:
         Returns a copy of the most recent frame, or None if no frame received yet.
         Thread-safe - can be called from any thread while hub is running.
         """
-        return self.get_frame("A")
+        return self.get_frame(HEADER_A)
 
     def get_frame_b(self) -> Optional[np.ndarray]:
         """Return the latest frame from sensor B (non-blocking).
@@ -470,13 +459,7 @@ class SensXHub:
         Returns a copy of the most recent frame, or None if no frame received yet.
         Thread-safe - can be called from any thread while hub is running.
         """
-        return self.get_frame("B")
-
-    def _header_for(self, channel: str) -> bytes:
-        letter = channel.upper()
-        if len(letter) != 1 or letter not in _LETTERS:
-            raise ValueError(f"channel must be one of {', '.join(_LETTERS)}; got {channel!r}")
-        return _HEADER_OF[letter]
+        return self.get_frame(HEADER_B)
 
     # ------------------------------------------------------------------
     # Output mode (SensX25)
@@ -486,122 +469,64 @@ class SensXHub:
         """Return the sensors' output mode: ``"adc"`` or ``"pressure"``.
 
         Streaming pauses for a moment while the sensors are asked. Raises
-        RuntimeError if no sensor answers or if the sensors are not all in
-        the same mode (fix that with :meth:`set_output_mode`).
+        RuntimeError if the sensors are not all in the same mode.
         """
         with self._paused():
-            values, complete, live = self._read_output_mode()
-
-        if not live:
+            values = self._read_modes()
+        if len(set(values)) != 1:
             raise RuntimeError(
-                "No frames from the hub; check the port, baud rate and connections."
+                f"The sensors are not all in the same output mode "
+                f"({[_MODES[v] for v in values]}); use set_output_mode()."
             )
-        if not values:
-            raise RuntimeError(
-                "No reply to the output-mode query. Output-mode switching is "
-                "supported on SensX25 (5x5) sensors."
-            )
-        unknown = sorted(set(values) - set(_MODE_NAMES))
-        if unknown:
-            raise RuntimeError(f"Unexpected output-mode value(s) from the sensors: {unknown}")
-        if len(set(values)) > 1:
-            raise RuntimeError(
-                "The sensors are not all in the same output mode "
-                f"(replies: {[_MODE_NAMES[v] for v in values]}). "
-                "Use set_output_mode() to set them all."
-            )
-        if not complete:
-            logger.warning(
-                "Output mode heard from fewer than the %d sensors sending data.",
-                len(live),
-            )
-        return _MODE_NAMES[values[0]]
+        return _MODES[values[0]]
 
-    def set_output_mode(self, mode: str, attempts: int = 3) -> None:
-        """Set the output mode of every sensor on the hub.
+    def set_output_mode(self, mode: str) -> None:
+        """Switch every sensor on the hub to ``"pressure"`` or ``"adc"``.
 
-        *mode* is ``"pressure"`` (factory setting, kPa) or ``"adc"`` (ADC
-        counts). The hub passes the command to all sensors at once; sensors
-        cannot be set individually through the hub. The setting is stored in
-        the sensors and kept through power-off.
+        ``"pressure"`` is the factory setting (kPa); ``"adc"`` gives ADC
+        counts. One command reaches all sensors on the hub; they cannot be
+        set individually. The setting is stored in the sensors and kept
+        through power-off.
 
-        The new mode is read back from every sensor that is sending frames
-        before returning. If the sensors are already in *mode*, nothing is
-        written. Streaming pauses (usually about a second,
-        at most several seconds) and resumes on its own; frames received
-        during the change are discarded. Raises RuntimeError if the change
-        cannot be confirmed.
+        The new mode is read back from every connected sensor before
+        returning; RuntimeError if it cannot be confirmed. Streaming pauses
+        meanwhile (usually about a second) and resumes on its own. Do not
+        call this from a frame callback.
         """
-        key = mode.lower()
-        if key not in OUTPUT_MODES:
-            raise ValueError(f"mode must be one of {sorted(OUTPUT_MODES)}; got {mode!r}")
-        target = OUTPUT_MODES[key]
-        write = _modbus.request(
-            _MODBUS_ADDRESS, _modbus.FUNC_WRITE, _modbus.REG_OUTPUT_MODE, target
-        )
-
+        if mode not in _MODES:
+            raise ValueError(f"mode must be 'adc' or 'pressure', got {mode!r}")
+        target = _MODES.index(mode)
         with self._paused():
-            # Only write to sensors that report a valid output mode.
-            values, complete, live = self._read_output_mode()
-            if not live:
-                raise RuntimeError(
-                    "No frames from the hub; nothing was changed. "
-                    "Check the port, baud rate and connections."
-                )
-            if not values:
-                raise RuntimeError(
-                    "No reply to the output-mode query; nothing was changed. "
-                    "Output-mode switching is supported on SensX25 (5x5) sensors."
-                )
-            unknown = sorted(set(values) - set(_MODE_NAMES))
-            if unknown:
-                raise RuntimeError(
-                    f"Unexpected output-mode value(s) {unknown}; nothing was changed."
-                )
-            if complete and set(values) == {target}:
-                return
+            self._transact(_mode_request(0x06, target))
+            values = self._read_modes()
+        if set(values) != {target}:
+            raise RuntimeError(
+                f"Output mode {mode!r} not confirmed on every sensor "
+                f"({[_MODES[v] for v in values]})."
+            )
 
-            for _ in range(attempts):
-                self._transact(write)
-                values, complete, live = self._read_output_mode()
-                if complete and set(values) == {target}:
-                    return
-                if not complete and set(values) <= {target}:
-                    break  # a sensor never answers; writing again won't help
+    def _read_modes(self) -> List[int]:
+        """Ask the sensors for their output mode; return one value per sensor.
 
-        raise RuntimeError(
-            f"Could not confirm output mode {key!r} on all {len(live)} sensors "
-            f"sending data (channels {''.join(sorted(live))}; last replies: "
-            f"{[_MODE_NAMES.get(v, v) for v in values]}). A connected sensor "
-            "is not answering."
-        )
-
-    def _read_output_mode(self) -> Tuple[List[int], bool, Set[str]]:
-        """Ask the sensors for their output mode.
-
-        Every connected sensor answers, but behind the hub a reply is now
-        and then lost on the way back, so the question is repeated until a
-        single read returns an answer from every sensor that is sending
-        frames.
-
-        Returns all values heard, whether such a complete read happened, and
-        the channels seen sending frames.
+        Every connected sensor answers, but the hub loses some replies on the
+        way back, sometimes several reads in a row, so the question is
+        repeated until one read has a reply from every connected sensor.
         """
-        query = _modbus.request(
-            _MODBUS_ADDRESS, _modbus.FUNC_READ, _modbus.REG_OUTPUT_MODE, 1
-        )
-        heard: List[int] = []
-        live: Set[str] = set()
-        for attempt in range(1, _MAX_MODE_READS + 1):
+        query = _mode_request(0x03, 1)
+        for _ in range(_MAX_MODE_READS):
             rx = self._transact(query)
-            live |= {_LETTER_OF[h] for h, _ in self._extract_frames(bytearray(rx))}
-            values = _modbus.find_read_replies(rx, _MODBUS_ADDRESS)
-            heard += values
-            if live and len(values) >= len(live):
-                return heard, True, live
-            if not heard and attempt >= _MAX_SILENT_READS:
-                break  # nothing answers at all
-        return heard, False, live
+            ts = time.perf_counter()
+            for header, frame in self._extract_frames(bytearray(rx)):
+                self._store_frame(header, frame, ts)
+            values = _mode_replies(rx)
+            sensors = len(self.connected)
+            if sensors and len(values) >= sensors:
+                return values
+        raise RuntimeError(
+            f"No complete reply from the {len(self.connected)} connected sensors. "
+            "Check the port and connections; output modes are supported on "
+            "SensX25 (5x5) sensors."
+        )
 
     def _transact(self, request: bytes) -> bytes:
         """Send a settings command and return everything received after it."""
@@ -611,7 +536,7 @@ class SensXHub:
         self._ser.reset_input_buffer()
         self._ser.write(request)
         self._ser.flush()
-        if request[1] == _modbus.FUNC_WRITE:
+        if request[1] == 0x06:
             self._last_write = time.perf_counter()
         rx = bytearray()
         deadline = time.perf_counter() + _REPLY_WINDOW_S
@@ -622,20 +547,14 @@ class SensXHub:
     @contextmanager
     def _paused(self) -> Iterator[None]:
         """Stop the reader thread (if running) around a settings command."""
-        if self._thread is not None and threading.current_thread() is self._thread:
-            raise RuntimeError("Sensor settings cannot be changed from a frame callback.")
         was_running = self.is_running
-        if was_running:
-            self.stop()
-            if self.is_running:
-                raise RuntimeError("Reader thread did not stop; settings not changed.")
+        self.stop()
         try:
             yield
         finally:
-            # Frames received before and during the command are stale.
+            # Frames received before the command may be in the old mode.
             self._buf.clear()
             self._pending.clear()
-            self._ser.reset_input_buffer()
             if was_running:
                 self.start()
 
