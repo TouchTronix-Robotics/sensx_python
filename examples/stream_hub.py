@@ -59,10 +59,8 @@ def main() -> None:
     hub = SensXHub(
         port=args.port,
         baud_rate=args.baud,
-        rows_a=args.rows,
-        cols_a=args.cols,
-        rows_b=args.rows,
-        cols_b=args.cols,
+        rows=args.rows,
+        cols=args.cols,
     )
 
     col_header = "     " + "".join(f"{c:>6}" for c in range(args.cols))

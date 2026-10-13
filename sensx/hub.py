@@ -16,7 +16,7 @@ Blocking read (five SensX25 (5x5) sensors, 921 600 baud)::
 
     from sensx import SensXHub
 
-    hub = SensXHub("COM7", baud_rate=921600, rows_a=5, cols_a=5)
+    hub = SensXHub("COM7", baud_rate=921600, rows=5, cols=5)
     while True:
         header, frame = hub.read_frame()     # header: HEADER_A ... HEADER_E
         print(header.hex(), frame.max())
@@ -26,7 +26,7 @@ Callback::
     from sensx import SensXHub
     import time
 
-    with SensXHub("COM7", baud_rate=921600, rows_a=5, cols_a=5) as hub:
+    with SensXHub("COM7", baud_rate=921600, rows=5, cols=5) as hub:
         hub.on_frame = lambda header, frame, ts: print(header.hex(), frame.max())
         hub.start()
         time.sleep(10)
@@ -84,6 +84,9 @@ _MAX_MODE_READS = 20
 #: Frames held for ``read_frame()`` when the caller reads slower than the hub
 #: sends; beyond this the oldest frames are dropped.
 _MAX_PENDING_FRAMES = 1024
+#: Serial read timeout (s) and bytes per read.
+_SERIAL_TIMEOUT_S = 0.005
+_READ_CHUNK = 4096
 
 
 def _crc16(data: bytes) -> bytes:
@@ -127,60 +130,25 @@ class SensXHub:
     port : str
         Serial port path (e.g. ``"/dev/ttyUSB0"`` or ``"COM7"``).
     baud_rate : int
-        Baud rate (default 1 500 000). Use 921 600 for SensX25 (5x5) sensors.
-    rows_a, cols_a : int
-        Grid dimensions of sensor A (default 16 x 12). Sensors C, D and E
-        use the same grid as sensor A.
-    rows_b, cols_b : int
-        Grid dimensions of sensor B (defaults to same as sensor A).
-    serial_timeout : float
-        Serial read timeout in seconds.
-    read_chunk : int
-        Bytes to read per ``serial.read()`` call.
+        Baud rate of the hub: 921 600 for SensX25 (5x5) sensors.
+    rows, cols : int
+        Grid dimensions of the sensors. All sensors on a hub are the same type.
     """
 
-    def __init__(
-        self,
-        port: str,
-        baud_rate: int = 1_500_000,
-        rows_a: int = 16,
-        cols_a: int = 12,
-        rows_b: Optional[int] = None,
-        cols_b: Optional[int] = None,
-        serial_timeout: float = 0.005,
-        read_chunk: int = 4096,
-    ) -> None:
-        self.port = port
-        self.baud_rate = baud_rate
+    def __init__(self, port: str, baud_rate: int, rows: int, cols: int) -> None:
+        self.rows = rows
+        self.cols = cols
+        self._frame_size = HEADER_LEN + rows * cols * BYTES_PER_PIXEL
 
-        # Sensor geometry (B defaults to A; C-E always follow A)
-        self.rows_a = rows_a
-        self.cols_a = cols_a
-        self.rows_b = rows_b if rows_b is not None else rows_a
-        self.cols_b = cols_b if cols_b is not None else cols_a
-        self._shape: Dict[bytes, Tuple[int, int]] = {
-            h: (rows_a, cols_a) for h in HEADERS
-        }
-        self._shape[HEADER_B] = (self.rows_b, self.cols_b)
-        self._frame_size: Dict[bytes, int] = {
-            h: HEADER_LEN + rows * cols * BYTES_PER_PIXEL
-            for h, (rows, cols) in self._shape.items()
-        }
-        self._read_chunk = read_chunk
-
-        # Serial port (opened immediately so wiring errors surface early)
-        self._ser = serial.Serial(port, baud_rate, timeout=serial_timeout)
-
-        # Send init command (same as single-sensor driver)
-        init_cmd = bytes.fromhex("01 06 60 10 00 01 57 CF")
-        self._ser.write(init_cmd)
-        self._ser.flush()
-        self._last_write = time.perf_counter()
+        # Serial port (opened immediately so wiring errors surface early).
+        # The hub streams on its own from power-on; nothing needs to be sent.
+        self._ser = serial.Serial(port, baud_rate, timeout=_SERIAL_TIMEOUT_S)
+        self._last_write = 0.0
 
         # Latest frame and timestamp, pre-allocated for all five sensors
         self._lock = threading.Lock()
         self._frames: Dict[bytes, np.ndarray] = {
-            h: np.zeros(shape, dtype=np.uint16) for h, shape in self._shape.items()
+            h: np.zeros((rows, cols), dtype=np.uint16) for h in HEADERS
         }
         self._timestamps: Dict[bytes, float] = {h: 0.0 for h in HEADERS}
 
@@ -194,10 +162,8 @@ class SensXHub:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
-        # User callbacks
+        # User callback: on_frame(header, frame, ts)
         self.on_frame: Optional[Callable[[bytes, np.ndarray, float], None]] = None
-        self.on_frame_a: Optional[Callable[[np.ndarray, float], None]] = None
-        self.on_frame_b: Optional[Callable[[np.ndarray, float], None]] = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -208,30 +174,6 @@ class SensXHub:
         """Headers of the sensors that have sent frames, e.g. ``(HEADER_A, HEADER_C)``."""
         with self._lock:
             return tuple(h for h in HEADERS if self._timestamps[h])
-
-    @property
-    def latest_frame_a(self) -> np.ndarray:
-        """Return a copy of the most recent sensor-A frame (thread-safe)."""
-        with self._lock:
-            return self._frames[HEADER_A].copy()
-
-    @property
-    def latest_frame_b(self) -> np.ndarray:
-        """Return a copy of the most recent sensor-B frame (thread-safe)."""
-        with self._lock:
-            return self._frames[HEADER_B].copy()
-
-    @property
-    def latest_timestamp_a(self) -> float:
-        """Timestamp (``time.perf_counter()``) of the most recent sensor-A frame."""
-        with self._lock:
-            return self._timestamps[HEADER_A]
-
-    @property
-    def latest_timestamp_b(self) -> float:
-        """Timestamp (``time.perf_counter()``) of the most recent sensor-B frame."""
-        with self._lock:
-            return self._timestamps[HEADER_B]
 
     @property
     def is_running(self) -> bool:
@@ -247,18 +189,16 @@ class SensXHub:
         if self.is_running:
             return
         self._stop_event.clear()
-        if not self._ser.is_open:
-            self._ser.open()
         self._ser.reset_input_buffer()
         self._thread = threading.Thread(
             target=self._reader_loop, name="SensXHub-Reader", daemon=True
         )
         self._thread.start()
 
-    def stop(self, join: bool = True) -> None:
+    def stop(self) -> None:
         """Stop the background reader thread."""
         self._stop_event.set()
-        if join and self._thread is not None and self._thread.is_alive():
+        if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=2.0)
 
     def close(self) -> None:
@@ -281,16 +221,13 @@ class SensXHub:
     # Frame parsing (no CRC on hub)
     # ------------------------------------------------------------------
 
-    def _parse_frame(self, header: bytes, raw: bytes) -> np.ndarray:
+    def _parse_frame(self, raw: bytes) -> np.ndarray:
         """Parse raw frame bytes into a numpy array (no CRC check)."""
-        rows, cols = self._shape[header]
         payload = raw[HEADER_LEN:]
-        frame = np.frombuffer(payload, dtype=">u2").reshape(rows, cols)
-        return (frame & 0x0FFF).astype(np.uint16)
+        frame = np.frombuffer(payload, dtype=">u2").reshape(self.rows, self.cols)
+        return frame.astype(np.uint16)
 
-    def _find_next_header(
-        self, buf: bytearray, start: int = 0
-    ) -> Tuple[Optional[int], Optional[bytes]]:
+    def _find_next_header(self, buf: bytearray) -> Tuple[Optional[int], Optional[bytes]]:
         """Find the earliest occurrence of any sensor header.
 
         Returns ``(index, header_bytes)`` or ``(None, None)`` if none is found.
@@ -298,7 +235,7 @@ class SensXHub:
         best_idx: Optional[int] = None
         best_header: Optional[bytes] = None
         for header in HEADERS:
-            idx = buf.find(header, start)
+            idx = buf.find(header)
             if idx != -1 and (best_idx is None or idx < best_idx):
                 best_idx, best_header = idx, header
         return best_idx, best_header
@@ -307,7 +244,7 @@ class SensXHub:
         """Check if bytes at position idx form a valid frame header."""
         if idx + HEADER_LEN > len(buf):
             return False
-        return bytes(buf[idx : idx + HEADER_LEN]) in self._frame_size
+        return bytes(buf[idx : idx + HEADER_LEN]) in HEADERS
 
     def _extract_frames(self, buf: bytearray) -> List[Tuple[bytes, np.ndarray]]:
         """Remove every complete frame from *buf* and return them in order.
@@ -328,7 +265,7 @@ class SensXHub:
             if idx > 0:
                 del buf[:idx]
 
-            fsize = self._frame_size[header]
+            fsize = self._frame_size
 
             # Need enough data for current frame + next header validation
             if len(buf) < fsize + HEADER_LEN:
@@ -342,7 +279,7 @@ class SensXHub:
             # Confirmed proper frame boundary
             raw = bytes(buf[:fsize])
             del buf[:fsize]
-            frames.append((header, self._parse_frame(header, raw)))
+            frames.append((header, self._parse_frame(raw)))
 
     # ------------------------------------------------------------------
     # Frame storage and callbacks
@@ -355,15 +292,13 @@ class SensXHub:
             self._timestamps[header] = ts
 
     def _dispatch(self, header: bytes, frame: np.ndarray, ts: float) -> None:
-        """Store a frame and run the user callbacks for it."""
+        """Store a frame and run the user callback for it."""
         self._store_frame(header, frame, ts)
-        per_sensor = {HEADER_A: self.on_frame_a, HEADER_B: self.on_frame_b}.get(header)
-        for cb, args in ((per_sensor, (frame, ts)), (self.on_frame, (header, frame, ts))):
-            if cb is not None:
-                try:
-                    cb(*args)
-                except Exception:
-                    logger.exception("Error in frame callback")
+        if self.on_frame is not None:
+            try:
+                self.on_frame(header, frame, ts)
+            except Exception:
+                logger.exception("Error in on_frame callback")
 
     # ------------------------------------------------------------------
     # Synchronous (blocking) reads
@@ -382,7 +317,7 @@ class SensXHub:
         **not** mix this with ``start()``; use one pattern or the other.
         """
         while not self._pending:
-            chunk = self._ser.read(self._read_chunk)
+            chunk = self._ser.read(_READ_CHUNK)
             if not chunk:
                 # No data available (timeout) -- brief yield to prevent busy spin
                 time.sleep(0.001)
@@ -396,43 +331,6 @@ class SensXHub:
         self._store_frame(header, frame, ts)
         return header, frame
 
-    def read_frame_a(self) -> np.ndarray:
-        """Block until the next sensor-A frame arrives."""
-        while True:
-            header, frame = self.read_frame()
-            if header == HEADER_A:
-                return frame
-
-    def read_frame_b(self) -> np.ndarray:
-        """Block until the next sensor-B frame arrives."""
-        while True:
-            header, frame = self.read_frame()
-            if header == HEADER_B:
-                return frame
-
-    def read_frames(
-        self, timeout: Optional[float] = None
-    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Block until one frame from each of sensors A and B has been received.
-
-        Returns ``(frame_a, frame_b)``.  Either may be ``None`` if
-        *timeout* expires first.
-        """
-        deadline = None if timeout is None else time.monotonic() + timeout
-        got_a: Optional[np.ndarray] = None
-        got_b: Optional[np.ndarray] = None
-
-        while got_a is None or got_b is None:
-            if deadline is not None and time.monotonic() > deadline:
-                break
-            header, frame = self.read_frame()
-            if header == HEADER_A and got_a is None:
-                got_a = frame
-            elif header == HEADER_B and got_b is None:
-                got_b = frame
-
-        return got_a, got_b
-
     def get_frame(self, header: bytes) -> Optional[np.ndarray]:
         """Return the latest frame from a sensor (non-blocking).
 
@@ -444,22 +342,6 @@ class SensXHub:
             if self._timestamps[header] == 0:
                 return None
             return self._frames[header].copy()
-
-    def get_frame_a(self) -> Optional[np.ndarray]:
-        """Return the latest frame from sensor A (non-blocking).
-
-        Returns a copy of the most recent frame, or None if no frame received yet.
-        Thread-safe - can be called from any thread while hub is running.
-        """
-        return self.get_frame(HEADER_A)
-
-    def get_frame_b(self) -> Optional[np.ndarray]:
-        """Return the latest frame from sensor B (non-blocking).
-
-        Returns a copy of the most recent frame, or None if no frame received yet.
-        Thread-safe - can be called from any thread while hub is running.
-        """
-        return self.get_frame(HEADER_B)
 
     # ------------------------------------------------------------------
     # Output mode (SensX25)
@@ -541,7 +423,7 @@ class SensXHub:
         rx = bytearray()
         deadline = time.perf_counter() + _REPLY_WINDOW_S
         while time.perf_counter() < deadline:
-            rx += self._ser.read(self._read_chunk)
+            rx += self._ser.read(_READ_CHUNK)
         return bytes(rx)
 
     @contextmanager
@@ -567,7 +449,7 @@ class SensXHub:
 
         while not self._stop_event.is_set():
             try:
-                chunk = self._ser.read(self._read_chunk)
+                chunk = self._ser.read(_READ_CHUNK)
             except serial.SerialException:
                 break
             if not chunk:

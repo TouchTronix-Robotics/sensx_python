@@ -56,11 +56,8 @@ def main():
     hub = SensXHub(
         port=args.port,
         baud_rate=args.baud,
-        rows_a=args.rows,
-        cols_a=args.cols,
-        rows_b=args.rows,
-        cols_b=args.cols,
-        serial_timeout=0.01,
+        rows=args.rows,
+        cols=args.cols,
     )
     hub.start()
 
@@ -82,8 +79,8 @@ def main():
             loop_start = time.perf_counter()
 
             # Sample latest frames (non-blocking)
-            frame_a = hub.get_frame_a()
-            frame_b = hub.get_frame_b()
+            frame_a = hub.get_frame(HEADER_A)
+            frame_b = hub.get_frame(HEADER_B)
 
             # Only count samples when we have both sensors (fixed-rate behavior)
             if frame_a is not None and frame_b is not None:

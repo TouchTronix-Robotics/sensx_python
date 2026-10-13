@@ -114,7 +114,7 @@ SCREEN_REFRESH_HZ = 20                    # live view redraw rate (all frames ar
 def open_hub(port, baud):
     """Open the hub, or exit with a readable message."""
     try:
-        return SensXHub(port, baud_rate=baud, rows_a=ROWS, cols_a=COLS)
+        return SensXHub(port, baud_rate=baud, rows=ROWS, cols=COLS)
     except serial.SerialException as e:
         sys.exit(f"Could not open {port}: {e}\n"
                  "Check the port name, that the hub is plugged in, and that no other "

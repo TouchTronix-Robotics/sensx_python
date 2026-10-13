@@ -102,7 +102,7 @@ with SensX(port="/dev/ttyUSB0") as sensor:
 
 ### `SensXHub` with five SensX25 (5x5) sensors
 
-`SensXHub(port, baud_rate=921600, rows_a=5, cols_a=5)`
+`SensXHub(port, baud_rate=921600, rows=5, cols=5)`
 
 Up to five sensors on one hub, on channels A to E (frame headers `HEADER_A` = `0xAAAA`
 to `HEADER_E` = `0xEEEE`). Frames from every connected sensor are delivered; an empty
@@ -112,7 +112,7 @@ connector sends nothing.
 from sensx import SensXHub
 import time
 
-hub = SensXHub("/dev/ttyUSB0", baud_rate=921600, rows_a=5, cols_a=5)
+hub = SensXHub("/dev/ttyUSB0", baud_rate=921600, rows=5, cols=5)
 hub.on_frame = lambda header, frame, ts: print(header.hex(), frame.max())
 hub.start()
 time.sleep(5)
@@ -125,16 +125,12 @@ hub.close()
 | `stop()`              | Stop the reader thread                                             |
 | `close()`             | Stop and close the serial port                                     |
 | `on_frame`            | Callback for every sensor: `fn(header: bytes, frame: np.ndarray, ts: float)` |
-| `on_frame_a`, `on_frame_b` | Callbacks for sensor A / B: `fn(frame: np.ndarray, ts: float)` |
 | `get_frame(header)`   | Latest frame of a sensor (`HEADER_A` to `HEADER_E`), or `None` before the first one |
 | `connected`           | Headers of the sensors that have sent frames, e.g. `(HEADER_A, HEADER_C)` |
 | `read_frame()`        | Blocking read -- returns `(header, frame)` for the next frame from any sensor (`header` is `HEADER_A` to `HEADER_E`) |
-| `read_frames(timeout=None)` | Blocking read of one frame from sensor A and one from sensor B: `(frame_a, frame_b)` |
 | `get_output_mode()`   | `"pressure"` or `"adc"`                                            |
 | `set_output_mode(mode)` | Switch every sensor on the hub to `"pressure"` or `"adc"`        |
 
-`get_frame_a()`, `get_frame_b()`, `read_frame_a()`, `read_frame_b()`, `latest_frame_a`,
-`latest_frame_b`, `latest_timestamp_a` and `latest_timestamp_b` are kept for existing code.
 Use either `start()` with callbacks / `get_frame()`, or the blocking `read_frame()`, not both.
 
 ### Which sensor is which
